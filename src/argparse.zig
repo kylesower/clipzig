@@ -61,46 +61,27 @@ const FlagTypes = flagTypesFromParseFns(parseFns);
 
 fn Flag(parsers: anytype) type {
     return struct {
-        type: []const u8,
+        parser: []const u8,
         raw: []const u8,
         value: ?flagTypesFromParseFns(parsers) = null,
         pub fn get_type(self: @This()) []const u8 {
-            return self.type;
+            return self.parser;
         }
     };
 }
 
-fn Cmd(parsers: anytype) type {
-    return struct {
-        flags: []const Flag(parsers),
-    };
-}
-//
-// test "Flag" {
-//     const F = flagTypesFromParseFns(parseFns);
-//     const u: F = .{ .int = 7 };
-//     const v2: F = .{ .ts = 64 };
-//     const v3: F = .{ .ts2 = 64 };
-//     try std.testing.expectEqual(@TypeOf(v3.ts2), @TypeOf(v2.ts));
-//     try std.testing.expectEqual(v2, v3);
-//     _ = u;
-// }
-
-const cmd = Cmd(parseFns){
-    .flags = &.{
-        .{ .type = "int", .raw = "240" },
-        .{ .type = "ts", .raw = "240" },
-    },
-};
-
 const Param = struct {
-    type: [:0]const u8,
+    parser: [:0]const u8,
     name: [:0]const u8,
-    default: ?[:0]const u8,
+    default: ?[:0]const u8 = null,
 };
 
-fn getParamType(param: Param) type {
-    const ret_type = @typeInfo(@TypeOf(@field(parseFns, param.type))).@"fn".return_type.?;
+/// Get the type of a param based on the parse function's return type.
+/// If the return type is an error union, this extracts the payload type from
+/// the error union.
+/// If the return type is an optional, this will still return an optional.
+fn getParamTypeErrorStripped(param: Param) type {
+    const ret_type = @typeInfo(@TypeOf(@field(parseFns, param.parser))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
     const ret_type_final = if (ret_type_info == .error_union)
         ret_type_info.error_union.payload
@@ -109,37 +90,42 @@ fn getParamType(param: Param) type {
     return ret_type_final;
 }
 
+/// Determines whether the parser for the parameter has an error union return type.
 fn paramParseFnErrors(param: Param) bool {
-    return @typeInfo(@typeInfo(@TypeOf(@field(parseFns, param.type))).@"fn".return_type.?) == .error_union;
+    return @typeInfo(@typeInfo(@TypeOf(@field(parseFns, param.parser))).@"fn".return_type.?) == .error_union;
 }
 
+/// Convert all the parameters into a struct based on the function signatures of the parsers
+/// and the default values of the params.
 fn ResultType(params: []const Param) type {
     var fields: [params.len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        const pType = getParamType(param);
-        // The parseFn can return an error and/or an optional. This statement could thus give us
-        // !?T.
-        const result_val = blk: {
+        const pType = getParamTypeErrorStripped(param);
+        // We use the parseFn with the default value string to determine the default value.
+        // If the caller provided an invalid default value causing the parseFn to error,
+        // we have to provide a nice compileError, or else it's very hard to figure out
+        // what went wrong.
+        const default_val_ptr = blk: {
             if (param.default) |d| {
                 if (paramParseFnErrors(param)) {
-                    break :blk @field(parseFns, param.type)(d) catch {
+                    break :blk @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d))) catch {
                         @compileError(std.fmt.comptimePrint(
-                            "Failed to compute default value using parse function for '{s}' using default value string '{s}'\n",
-                            .{ param.type, d },
+                            "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
+                            .{ param.parser, d },
                         ));
                     };
                 } else {
-                    break :blk @field(parseFns, param.type)(d);
+                    break :blk @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d)));
                 }
             } else {
+                // If they didn't provide a default value, we give a null default_val pointer.
                 break :blk null;
             }
         };
-        // const default_val = if (@typeInfo(@TypeOf(result_val)) == .error_union) result_val catch {} else result_val;
         fields[i] = .{
             .name = param.name,
-            .type = @TypeOf(result_val),
-            .default_value_ptr = @ptrCast(&result_val),
+            .type = pType,
+            .default_value_ptr = default_val_ptr,
             .is_comptime = false,
             .alignment = @alignOf(pType),
         };
@@ -152,16 +138,16 @@ fn ResultType(params: []const Param) type {
     } });
 }
 
+const Cli = struct {
+    params: []Param,
+};
 test "cmd" {
-    const param = Param{ .type = "int", .name = "ts", .default = "19" };
-    const param2 = Param{ .type = "str", .name = "ts2", .default = "19" };
-    const Result = ResultType(&.{param, param2});
-    const result = Result{};
+    const param = Param{
+        .parser = "int",
+        .name = "ts",
+    };
+    const param2 = Param{ .parser = "str", .name = "ts2", .default = "19" };
+    const Result = ResultType(&.{ param, param2 });
+    const result = Result{.ts = 19};
     std.debug.print("{any}\n", .{result});
-    @compileLog(@TypeOf(result.ts));
-    @compileLog(@TypeOf(result.ts2));
-    //
-    // const value = @field(parseFns, param.type)("27");
-    // std.debug.print("flag.value is {any}\n", .{value});
 }
-
