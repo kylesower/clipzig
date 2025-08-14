@@ -1,17 +1,17 @@
 const std = @import("std");
 
-fn parseu8(in: []const u8) !?u8 {
+fn parseu8(in: [:0]const u8) !u8 {
     return std.fmt.parseInt(u8, in, 10);
 }
 
-fn parseTs(in: []const u8) !i64 {
+fn parseTs(in: [:0]const u8) !i64 {
     return std.fmt.parseInt(i64, in, 10);
 }
 
-fn parseTs2(in: []const u8) !i64 {
+fn parseTs2(in: [:0]const u8) !i64 {
     return std.fmt.parseInt(i64, in, 10);
 }
-fn parseStr(in: []const u8) []const u8 {
+fn parseStr(in: [:0]const u8) []const u8 {
     return in;
 }
 
@@ -203,7 +203,7 @@ fn ResultType(cmd: Command) type {
 
     var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        const pType = getParamTypeErrorStripped(param.parser);
+        const p_type = getParamTypeErrorStripped(param.parser);
         // We use the parseFn with the default value string to determine the default value.
         // If the caller provided an invalid default value causing the parseFn to error,
         // we have to provide a nice compileError, or else it's very hard to figure out
@@ -227,10 +227,10 @@ fn ResultType(cmd: Command) type {
         };
         fields[i] = .{
             .name = param.name,
-            .type = pType,
+            .type = p_type,
             .default_value_ptr = default_val_ptr,
             .is_comptime = false,
-            .alignment = @alignOf(pType),
+            .alignment = @alignOf(p_type),
         };
     }
 
@@ -245,14 +245,14 @@ fn ResultType(cmd: Command) type {
     }
 
     for (params.len + flags.len.., positionals) |i, positional| {
-        var pType = getParamTypeErrorStripped(positional.parser);
-        pType = if (positional.value_count == .one) pType else []pType;
+        var p_type = getParamTypeErrorStripped(positional.parser);
+        p_type = if (positional.value_count == .one) p_type else []p_type;
         fields[i] = .{
             .name = positional.name,
-            .type = pType,
+            .type = p_type,
             .default_value_ptr = null,
             .is_comptime = false,
-            .alignment = @alignOf(pType),
+            .alignment = @alignOf(p_type),
         };
     }
 
@@ -318,7 +318,6 @@ const Param = struct {
     default: ?[:0]const u8 = null,
     description: ?[:0]const u8 = null,
     value_count: ValueCount = .one,
-    required: bool = false,
 };
 
 const Flag = struct {
@@ -357,7 +356,38 @@ const Command = struct {
     description: ?[:0]const u8 = null,
 };
 
-fn parse(cmd: Command) void {
+fn validate_parsers(parsers: anytype) void {
+    const parsers_info = @typeInfo(@TypeOf(parsers));
+    if (parsers_info != .@"struct") {
+        @compileError("parsers must be a tuple that maps parser strings to parser functions");
+    }
+    const parser_fields = parsers_info.@"struct".fields;
+    comptime var i = 0;
+    inline while (i < parser_fields.len) : (i += 1) {
+        const field = parser_fields[i];
+        const field_info = @typeInfo(field.type);
+        if (field_info != .@"fn") {
+            @compileError("parsers must be a tuple that maps parser strings to parser functions");
+        }
+        const fn_params = field_info.@"fn".params;
+        if (fn_params.len != 1) {
+            @compileError(std.fmt.comptimePrint(
+                "error for parser {s}: parser must be a function that takes [:0]const u8",
+                .{field.name},
+            ));
+        }
+        if (fn_params[0].type != [:0]const u8) {
+            @compileError(std.fmt.comptimePrint(
+                "error for parser {s}: parser must be a function that takes [:0]const u8. Found param type: {any}\n",
+                .{ field.name, fn_params[0].type },
+            ));
+        }
+    }
+}
+
+fn parse(cmd: Command, parsers: anytype) void {
+    validate_parsers(parsers);
+    // @compileLog(parsers_t);
     _ = cmd;
 }
 
@@ -380,6 +410,12 @@ test "cmd" {
         .subcommands = &.{sub},
     };
     const Result = ResultType(cmd);
-    const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}} };
-    std.debug.print("{any}\n", .{result});
+    const result: Result = undefined;
+    const result2: Result = undefined;
+    parse(cmd, parseFns);
+    // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}}, .f = true };
+    // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{}};
+    std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result.ts), result.ts });
+    std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
+    std.debug.print("{any}\n", .{@TypeOf(result.ts)});
 }
