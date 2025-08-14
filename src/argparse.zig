@@ -74,8 +74,8 @@ fn flagTypesFromParseFns(fns: anytype) type {
 /// If the return type is an error union, this extracts the payload type from
 /// the error union.
 /// If the return type is an optional, this will still return an optional.
-fn getParamTypeErrorStripped(param: Param) type {
-    const ret_type = @typeInfo(@TypeOf(@field(parseFns, param.parser))).@"fn".return_type.?;
+fn getParamTypeErrorStripped(parser_name: [:0]const u8) type {
+    const ret_type = @typeInfo(@TypeOf(@field(parseFns, parser_name))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
     const ret_type_final = if (ret_type_info == .error_union)
         ret_type_info.error_union.payload
@@ -195,9 +195,15 @@ fn validate_command_structure(cmd: Command) void {
 fn ResultType(cmd: Command) type {
     validate_command_structure(cmd);
     const params = cmd.params orelse &.{};
-    var fields: [params.len]std.builtin.Type.StructField = undefined;
+    const flags = cmd.flags orelse &.{};
+    const positionals = cmd.positionals orelse &.{};
+    // They can theoretically pass an empty slice, in which case we want 0 subcommands_len
+    const subcommands_len = if (cmd.subcommands) |sub| @min(1, sub.len) else 0;
+    const subcommands = cmd.subcommands orelse &.{};
+
+    var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        const pType = getParamTypeErrorStripped(param);
+        const pType = getParamTypeErrorStripped(param.parser);
         // We use the parseFn with the default value string to determine the default value.
         // If the caller provided an invalid default value causing the parseFn to error,
         // we have to provide a nice compileError, or else it's very hard to figure out
@@ -227,6 +233,68 @@ fn ResultType(cmd: Command) type {
             .alignment = @alignOf(pType),
         };
     }
+
+    for (params.len.., flags) |i, flag| {
+        fields[i] = .{
+            .name = flag.name,
+            .type = bool,
+            .default_value_ptr = &false,
+            .is_comptime = false,
+            .alignment = @alignOf(bool),
+        };
+    }
+
+    for (params.len + flags.len.., positionals) |i, positional| {
+        var pType = getParamTypeErrorStripped(positional.parser);
+        pType = if (positional.value_count == .one) pType else []pType;
+        fields[i] = .{
+            .name = positional.name,
+            .type = pType,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(pType),
+        };
+    }
+
+    if (subcommands_len > 0) {
+        var subcommands_enum_fields: [subcommands_len]std.builtin.Type.EnumField = undefined;
+        var subcommands_union_fields: [subcommands_len]std.builtin.Type.UnionField = undefined;
+        for (0.., subcommands) |i, subcommand| {
+            subcommands_enum_fields[i] = .{
+                .name = subcommand.name,
+                .value = i,
+            };
+            const sub_type = ResultType(subcommand);
+            subcommands_union_fields[i] = .{
+                .name = subcommand.name,
+                .type = sub_type,
+                .alignment = @alignOf(sub_type),
+            };
+        }
+
+        const subcommands_enum = @Type(.{ .@"enum" = .{
+            .tag_type = std.math.IntFittingRange(0, subcommands_len - 1),
+            .fields = subcommands_enum_fields[0..],
+            .decls = &.{},
+            .is_exhaustive = true,
+        } });
+
+        const subcommands_tagged_union = @Type(.{ .@"union" = .{
+            .layout = .auto,
+            .tag_type = subcommands_enum,
+            .decls = &.{},
+            .fields = subcommands_union_fields[0..],
+        } });
+
+        fields[fields.len - 1] = .{
+            .name = "subcommand",
+            .type = subcommands_tagged_union,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(subcommands_tagged_union),
+        };
+    }
+
     return @Type(.{ .@"struct" = .{
         .layout = .auto,
         .fields = fields[0..],
@@ -268,6 +336,7 @@ const Positional = struct {
     parser: [:0]const u8,
     value_count: ValueCount = .one,
     description: ?[:0]const u8 = null,
+    // TODO: default values? Not sure if that's a good idea...
 };
 
 const Command = struct {
@@ -282,6 +351,8 @@ const Command = struct {
     /// the first or the last positional argument is allowed to take many values.
     positionals: ?[]const Positional = null,
     /// Subcommands, which must come after any params/flags/positionals in the parent command.
+    /// In the resulting struct, the subcommands are a tagged union with the names
+    /// corresponding to the names of the subcommands.
     subcommands: ?[]const Command = null,
     description: ?[:0]const u8 = null,
 };
@@ -293,19 +364,22 @@ fn parse(cmd: Command) void {
 test "cmd" {
     const param1 = Param{ .parser = "int", .name = "ts", .long = "--timestamp" };
     const param2 = Param{ .parser = "str", .name = "ts2", .default = "19", .short = "-t" };
+    const flag1 = Flag{ .name = "f", .short = "-f" };
+    const pos1 = Positional{ .name = "pos", .parser = "int" };
     const sub = Command{
         .name = "main",
-        .positionals = &.{},
+        .positionals = &.{pos1},
         .subcommands = &.{},
+        .flags = &.{flag1},
     };
     const cmd = Command{
         .name = "main",
         .params = &.{ param1, param2 },
-        .flags = &.{},
-        .positionals = &.{},
+        .flags = &.{flag1},
+        .positionals = &.{pos1},
         .subcommands = &.{sub},
     };
     const Result = ResultType(cmd);
-    const result = Result{ .ts = 19 };
+    const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}} };
     std.debug.print("{any}\n", .{result});
 }
