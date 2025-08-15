@@ -5,6 +5,9 @@ fn parseu8(in: [:0]const u8) !u8 {
     return std.fmt.parseInt(u8, in, 10);
 }
 
+fn parseu16(in: [:0]const u8) !?u16 {
+    return std.fmt.parseInt(u16, in, 10);
+}
 fn parseTs(in: [:0]const u8) !i64 {
     return std.fmt.parseInt(i64, in, 10);
 }
@@ -16,60 +19,7 @@ fn parseStr(in: [:0]const u8) []const u8 {
     return in;
 }
 
-var parseFns = .{ .int = parseu8, .ts = parseTs, .ts2 = parseTs2, .str = parseStr };
-
-fn flagTypesFromParseFns(fns: anytype) type {
-    const FnsType = @TypeOf(fns);
-    const fns_type_info = @typeInfo(FnsType);
-    if (fns_type_info != .@"struct") {
-        @compileError("expected tuple or struct argument, found " ++ @typeName(FnsType));
-    }
-
-    const all_fields = fns_type_info.@"struct".fields;
-    var fields: [all_fields.len]std.builtin.Type.UnionField = undefined;
-    var union_tags: [all_fields.len]std.builtin.Type.EnumField = undefined;
-    for (all_fields, 0..) |field, i| {
-        const ret_type = @typeInfo(field.type).@"fn".return_type.?;
-        const ret_type_info = @typeInfo(ret_type);
-        const ret_type_final = if (ret_type_info == .error_union)
-            ret_type_info.error_union.payload
-        else
-            ret_type;
-        fields[i] = std.builtin.Type.UnionField{
-            .name = field.name,
-            .type = ret_type_final,
-            .alignment = 8,
-        };
-        union_tags[i] = .{
-            .name = field.name,
-            .value = i,
-        };
-    }
-    return @Type(.{ .@"union" = .{
-        .layout = .auto,
-        .tag_type = @Type(.{ .@"enum" = .{
-            .tag_type = u8,
-            .fields = &union_tags,
-            .decls = &.{},
-            .is_exhaustive = true,
-        } }),
-        .fields = fields[0..all_fields.len],
-        .decls = &.{},
-    } });
-}
-
-// const FlagTypes = flagTypesFromParseFns(parseFns);
-//
-// fn Flag(parsers: anytype) type {
-//     return struct {
-//         parser: []const u8,
-//         raw: []const u8,
-//         value: ?flagTypesFromParseFns(parsers) = null,
-//         pub fn get_type(self: @This()) []const u8 {
-//             return self.parser;
-//         }
-//     };
-// }
+var parseFns = .{ .int = parseu8, .ts = parseTs, .ts2 = parseTs2, .str = parseStr, .int16 = parseu16 };
 
 /// Get the type of a param based on the parse function's return type.
 /// If the return type is an error union, this extracts the payload type from
@@ -116,14 +66,14 @@ fn validate_command_structure(cmd: Command) void {
         }
         if (param.long) |long| {
             if (array_contains_string(all_the_names, long, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{param.long}));
+                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
             }
             all_the_names[all_the_names_len] = long;
             all_the_names_len += 1;
         }
         if (param.short) |short| {
             if (array_contains_string(all_the_names, short, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{param.short}));
+                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
             }
             all_the_names[all_the_names_len] = short;
             all_the_names_len += 1;
@@ -141,14 +91,14 @@ fn validate_command_structure(cmd: Command) void {
         }
         if (flag.long) |long| {
             if (array_contains_string(all_the_names, long, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{flag.long}));
+                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
             }
             all_the_names[all_the_names_len] = long;
             all_the_names_len += 1;
         }
         if (flag.short) |short| {
             if (array_contains_string(all_the_names, short, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{flag.short}));
+                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
             }
             all_the_names[all_the_names_len] = short;
             all_the_names_len += 1;
@@ -204,11 +154,10 @@ fn ResultType(cmd: Command) type {
 
     var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        const p_type = getParamTypeErrorStripped(param.parser);
-        // if (param.value_count == .many) {
-        //     @compileLog("the ptype is ");
-        //     @compileLog(p_type);
-        // }
+        var p_type = getParamTypeErrorStripped(param.parser);
+        if (param.value_count == .many) {
+            p_type = []const p_type;
+        }
 
         // We use the parseFn with the default value string to determine the default value.
         // If the caller provided an invalid default value causing the parseFn to error,
@@ -228,64 +177,25 @@ fn ResultType(cmd: Command) type {
                         break :blk @field(parseFns, param.parser)(d);
                     }
                 };
-                const default_val_sl: []const p_type = &.{default_val};
-                const ptr: *const []p_type = @ptrCast(@as(*const []const p_type, &default_val_sl));
-                const default_val_ptr: ?*const anyopaque = @ptrCast(ptr);
-                // const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
-                // @compileLog(dp.*);
-                // _ = default_val;
-                // @compileError(p_type);
-                // const default_sl = default_arr[0..];
-                // // const t1 = u8;
-                // // const t = [:0]const t1;
-                // const default_val_arr = [_]t{"test"};
-                // const default_val_sl = default_val_arr[0..];
-                // const default_val_ptr: ?*const anyopaque = @as(*const anyopaque, @ptrCast(default_val_sl));
-                // const ptr: ?*const anyopaque = @as(*const anyopaque, &.{default_val});
-                break :outer default_val_ptr;
-                // @compileLog(ptr.*);
-                // break :outer ptr;
-                // _ = default_val;
-                // break :outer @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d)));
-                // @compileError(v);
-                // break :outer @as(*const anyopaque, v.ptr);
-                // if (param.value_count == .many) {
-                //     const arr: [1]p_type = .{default_val};
-                //     const sl: []p_type = arr[0..];
-                //     _ = sl;
-                //     @compileLog("logging slice");
-                //     // @compileLog(sl);
-                //     @compileError("");
-                //     // break :outer @as(*const anyopaque, @ptrCast(sl.ptr));
-                // } else {
-                //     break :outer @as(*const anyopaque, @ptrCast(&default_val));
-                // }
+                if (param.value_count == .many) {
+                    const default_val_sl: p_type = &.{default_val};
+                    break :outer @as(*const anyopaque, @ptrCast(&default_val_sl));
+                } else {
+                    break :outer @as(*const anyopaque, @ptrCast(&default_val));
+                }
             } else {
                 // If they didn't provide a default value, we give a null default_val pointer.
-                // @compileLog("using null");
                 break :outer null;
             }
         };
 
-        if (param.value_count == .many) {
-            // @compileLog("using many");
-            // @compileLog(default_val_ptr);
-            fields[i] = .{
-                .name = param.name,
-                .type = []const p_type,
-                .default_value_ptr = default_val_ptr,
-                .is_comptime = false,
-                .alignment = @alignOf(p_type),
-            };
-        } else {
-            fields[i] = .{
-                .name = param.name,
-                .type = p_type,
-                .default_value_ptr = default_val_ptr,
-                .is_comptime = false,
-                .alignment = @alignOf(p_type),
-            };
-        }
+        fields[i] = .{
+            .name = param.name,
+            .type = p_type,
+            .default_value_ptr = default_val_ptr,
+            .is_comptime = false,
+            .alignment = @alignOf(p_type),
+        };
     }
 
     for (params.len.., flags) |i, flag| {
@@ -458,29 +368,38 @@ test "cmd" {
     _ = dp;
     // @compileLog(dp);
     const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "hello :)" };
-    // const param2 = Param{ .parser = "str", .name = "ts2", .default = "19", .short = "-t" };
+    const param2 = Param{ .parser = "int", .name = "ts2", .short = "-t", .default = "19" };
+    const param3 = Param{ .parser = "int16", .name = "ts3", .short = "-t2", };
+    const param4 = Param{ .parser = "str", .name = "ts4", .long = "--timestamp", .value_count = .one, .default = "howdy :D" };
     const flag1 = Flag{ .name = "f", .short = "-f" };
     const pos1 = Positional{ .name = "pos", .parser = "int" };
     const sub = Command{
         .name = "main",
+        .params = &.{param4},
         .positionals = &.{pos1},
         .subcommands = &.{},
         .flags = &.{flag1},
     };
     const cmd = Command{
         .name = "main",
-        .params = &.{param1}, //, param2 },
+        .params = &.{param1, param2, param3}, //, param3 },
         .flags = &.{flag1},
         .positionals = &.{pos1},
         .subcommands = &.{sub},
     };
     const Result = ResultType(cmd);
-    const result: Result = .{.pos = 1, .subcommand = .{.main = .{.pos = 1, .f = true}}};
+    var result: Result = .{ .pos = 1, .subcommand = .{ .main = .{ .pos = 1, .f = true } }, .ts3 = 19 };
+    result.pos = 8;
+    // result.subcommand = .{ .main = .{ .pos = 19 } };
+    // result.ts = &.{"hi :D"};
     // const result2: Result = undefined;
     _ = try parse(cmd, parseFns, std.testing.allocator);
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}}, .f = true };
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{}};
     std.debug.print("typeof ts: {any}, ts: {s}\n", .{ @TypeOf(result.ts), result.ts });
+    std.debug.print("typeof ts2: {any}, ts2: {d}\n", .{ @TypeOf(result.ts2), result.ts2 });
+    std.debug.print("typeof ts3: {any}, ts3: {?}\n", .{ @TypeOf(result.ts3), result.ts3 });
+    std.debug.print("typeof ts4: {any}, ts4: {s}\n", .{ @TypeOf(result.subcommand.main.ts4), result.subcommand.main.ts4 });
     // std.debug.print("ts: ", .{ @TypeOf(result.ts), result.ts });
     // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
     // std.debug.print("{any}\n", .{@TypeOf(result.ts)});
