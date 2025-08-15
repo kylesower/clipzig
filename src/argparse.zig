@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 fn parseu8(in: [:0]const u8) !u8 {
     return std.fmt.parseInt(u8, in, 10);
@@ -204,34 +205,90 @@ fn ResultType(cmd: Command) type {
     var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
         const p_type = getParamTypeErrorStripped(param.parser);
+        // if (param.value_count == .many) {
+        //     @compileLog("the ptype is ");
+        //     @compileLog(p_type);
+        // }
+
         // We use the parseFn with the default value string to determine the default value.
         // If the caller provided an invalid default value causing the parseFn to error,
         // we have to provide a nice compileError, or else it's very hard to figure out
         // what went wrong.
-        const default_val_ptr = blk: {
+        const default_val_ptr = outer: {
             if (param.default) |d| {
-                if (paramParseFnErrors(param)) {
-                    break :blk @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d))) catch {
-                        @compileError(std.fmt.comptimePrint(
-                            "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
-                            .{ param.parser, d },
-                        ));
-                    };
-                } else {
-                    break :blk @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d)));
-                }
+                const default_val = blk: {
+                    if (paramParseFnErrors(param)) {
+                        break :blk @field(parseFns, param.parser)(d) catch {
+                            @compileError(std.fmt.comptimePrint(
+                                "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
+                                .{ param.parser, d },
+                            ));
+                        };
+                    } else {
+                        break :blk @field(parseFns, param.parser)(d);
+                    }
+                };
+                const default_arr = [_]p_type{default_val};
+                var index = 1;
+                const default_val_sl = default_arr[0..index];
+                index += 1;
+                const ptr: *const [1]p_type = @ptrCast(@as(*const [1]p_type, default_val_sl));
+                const default_val_ptr: ?*const anyopaque = @ptrCast(ptr);
+                // const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
+                // @compileLog(dp.*);
+                // _ = default_val;
+                // @compileError(p_type);
+                // const default_sl = default_arr[0..];
+                // // const t1 = u8;
+                // // const t = [:0]const t1;
+                // const default_val_arr = [_]t{"test"};
+                // const default_val_sl = default_val_arr[0..];
+                // const default_val_ptr: ?*const anyopaque = @as(*const anyopaque, @ptrCast(default_val_sl));
+                // const ptr: ?*const anyopaque = @as(*const anyopaque, &.{default_val});
+                break :outer default_val_ptr;
+                // @compileLog(ptr.*);
+                // break :outer ptr;
+                // _ = default_val;
+                // break :outer @as(*const anyopaque, @ptrCast(&@field(parseFns, param.parser)(d)));
+                // @compileError(v);
+                // break :outer @as(*const anyopaque, v.ptr);
+                // if (param.value_count == .many) {
+                //     const arr: [1]p_type = .{default_val};
+                //     const sl: []p_type = arr[0..];
+                //     _ = sl;
+                //     @compileLog("logging slice");
+                //     // @compileLog(sl);
+                //     @compileError("");
+                //     // break :outer @as(*const anyopaque, @ptrCast(sl.ptr));
+                // } else {
+                //     break :outer @as(*const anyopaque, @ptrCast(&default_val));
+                // }
             } else {
                 // If they didn't provide a default value, we give a null default_val pointer.
-                break :blk null;
+                // @compileLog("using null");
+                break :outer null;
             }
         };
-        fields[i] = .{
-            .name = param.name,
-            .type = p_type,
-            .default_value_ptr = default_val_ptr,
-            .is_comptime = false,
-            .alignment = @alignOf(p_type),
-        };
+
+        if (param.value_count == .many) {
+            // @compileLog("using many");
+            // @compileLog(default_val_ptr);
+            fields[i] = .{
+                .name = param.name,
+                .type = [1]p_type,
+                .default_value_ptr = default_val_ptr,
+                .is_comptime = false,
+                .alignment = @alignOf(p_type),
+            };
+        } else {
+            fields[i] = .{
+                .name = param.name,
+                .type = p_type,
+                .default_value_ptr = default_val_ptr,
+                .is_comptime = false,
+                .alignment = @alignOf(p_type),
+            };
+        }
     }
 
     for (params.len.., flags) |i, flag| {
@@ -385,15 +442,26 @@ fn validate_parsers(parsers: anytype) void {
     }
 }
 
-fn parse(cmd: Command, parsers: anytype) void {
+fn parse(comptime cmd: Command, parsers: anytype, alloc: Allocator) !ResultType(cmd) {
     validate_parsers(parsers);
     // @compileLog(parsers_t);
-    _ = cmd;
+    const result: ResultType(cmd) = undefined;
+    const args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
+    return result;
 }
 
 test "cmd" {
-    const param1 = Param{ .parser = "int", .name = "ts", .long = "--timestamp" };
-    const param2 = Param{ .parser = "str", .name = "ts2", .default = "19", .short = "-t" };
+    const t1 = u8;
+    const t = [:0]const t1;
+    const default_val_arr = [_]t{"test"};
+    const default_val_sl = default_val_arr[0..];
+    const default_val_ptr: ?*const anyopaque = @as(*const anyopaque, @ptrCast(default_val_sl));
+    const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
+    _ = dp;
+    // @compileLog(dp);
+    const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "19" };
+    // const param2 = Param{ .parser = "str", .name = "ts2", .default = "19", .short = "-t" };
     const flag1 = Flag{ .name = "f", .short = "-f" };
     const pos1 = Positional{ .name = "pos", .parser = "int" };
     const sub = Command{
@@ -404,7 +472,7 @@ test "cmd" {
     };
     const cmd = Command{
         .name = "main",
-        .params = &.{ param1, param2 },
+        .params = &.{param1}, //, param2 },
         .flags = &.{flag1},
         .positionals = &.{pos1},
         .subcommands = &.{sub},
@@ -412,7 +480,7 @@ test "cmd" {
     const Result = ResultType(cmd);
     const result: Result = undefined;
     const result2: Result = undefined;
-    parse(cmd, parseFns);
+    _ = try parse(cmd, parseFns, std.testing.allocator);
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}}, .f = true };
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{}};
     std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result.ts), result.ts });
