@@ -5,7 +5,7 @@ fn parseu8(in: [:0]const u8) !u8 {
     return std.fmt.parseInt(u8, in, 10);
 }
 
-fn parseu16(in: [:0]const u8) !?u16 {
+fn parseu16(in: [:0]const u8) u16 {
     return std.fmt.parseInt(u16, in, 10);
 }
 fn parseTs(in: [:0]const u8) !i64 {
@@ -36,8 +36,8 @@ fn getParamTypeErrorStripped(parser_name: [:0]const u8) type {
 }
 
 /// Determines whether the parser for the parameter has an error union return type.
-fn paramParseFnErrors(param: Param) bool {
-    return @typeInfo(@typeInfo(@TypeOf(@field(parseFns, param.parser))).@"fn".return_type.?) == .error_union;
+fn parseFnErrors(parser_name: [:0]const u8) bool {
+    return @typeInfo(@typeInfo(@TypeOf(@field(parseFns, parser_name))).@"fn".return_type.?) == .error_union;
 }
 
 fn array_contains_string(haystack: [1000][:0]const u8, needle: [:0]const u8, haystack_len: usize) bool {
@@ -141,6 +141,61 @@ fn validate_command_structure(cmd: Command) void {
     }
 }
 
+fn param_or_positional_field(
+    parser: [:0]const u8,
+    name: [:0]const u8,
+    value_count: ValueCount,
+    required: bool,
+    default: ?[:0]const u8,
+) std.builtin.Type.StructField {
+    var p_type = getParamTypeErrorStripped(parser);
+    p_type = if (value_count == .one) p_type else []const p_type;
+    p_type = if (required) p_type else ?p_type;
+
+    // We use the parseFn with the default value string to determine the default value.
+    // If the caller provided an invalid default value causing the parseFn to error,
+    // we have to provide a nice compileError, or else it's very hard to figure out
+    // what went wrong.
+    const default_val_ptr = outer: {
+        if (default) |d| {
+            const default_val = blk: {
+                if (parseFnErrors(parser)) {
+                    break :blk @field(parseFns, parser)(d) catch {
+                        @compileError(std.fmt.comptimePrint(
+                            "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
+                            .{ parser, d },
+                        ));
+                    };
+                } else {
+                    break :blk @field(parseFns, parser)(d);
+                }
+            };
+            if (value_count == .many) {
+                const default_val_sl: p_type = &.{default_val};
+                break :outer @as(*const anyopaque, @ptrCast(&default_val_sl));
+            } else {
+                break :outer @as(*const anyopaque, @ptrCast(&default_val));
+            }
+        } else {
+            if (required) {
+                // If they didn't provide a default value, we give a null default_val pointer.
+                break :outer null;
+            } else {
+                const default_val: p_type = null;
+                break :outer @as(*const anyopaque, @ptrCast(&default_val));
+            }
+        }
+    };
+
+    return .{
+        .name = name,
+        .type = p_type,
+        .default_value_ptr = default_val_ptr,
+        .is_comptime = false,
+        .alignment = @alignOf(p_type),
+    };
+}
+
 /// Convert all the parameters into a struct based on the function signatures of the parsers
 /// and the default values of the params.
 fn ResultType(cmd: Command) type {
@@ -154,48 +209,13 @@ fn ResultType(cmd: Command) type {
 
     var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        var p_type = getParamTypeErrorStripped(param.parser);
-        if (param.value_count == .many) {
-            p_type = []const p_type;
-        }
-
-        // We use the parseFn with the default value string to determine the default value.
-        // If the caller provided an invalid default value causing the parseFn to error,
-        // we have to provide a nice compileError, or else it's very hard to figure out
-        // what went wrong.
-        const default_val_ptr = outer: {
-            if (param.default) |d| {
-                const default_val = blk: {
-                    if (paramParseFnErrors(param)) {
-                        break :blk @field(parseFns, param.parser)(d) catch {
-                            @compileError(std.fmt.comptimePrint(
-                                "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
-                                .{ param.parser, d },
-                            ));
-                        };
-                    } else {
-                        break :blk @field(parseFns, param.parser)(d);
-                    }
-                };
-                if (param.value_count == .many) {
-                    const default_val_sl: p_type = &.{default_val};
-                    break :outer @as(*const anyopaque, @ptrCast(&default_val_sl));
-                } else {
-                    break :outer @as(*const anyopaque, @ptrCast(&default_val));
-                }
-            } else {
-                // If they didn't provide a default value, we give a null default_val pointer.
-                break :outer null;
-            }
-        };
-
-        fields[i] = .{
-            .name = param.name,
-            .type = p_type,
-            .default_value_ptr = default_val_ptr,
-            .is_comptime = false,
-            .alignment = @alignOf(p_type),
-        };
+        fields[i] = param_or_positional_field(
+            param.parser,
+            param.name,
+            param.value_count,
+            param.required,
+            param.default,
+        );
     }
 
     for (params.len.., flags) |i, flag| {
@@ -209,15 +229,13 @@ fn ResultType(cmd: Command) type {
     }
 
     for (params.len + flags.len.., positionals) |i, positional| {
-        var p_type = getParamTypeErrorStripped(positional.parser);
-        p_type = if (positional.value_count == .one) p_type else []p_type;
-        fields[i] = .{
-            .name = positional.name,
-            .type = p_type,
-            .default_value_ptr = null,
-            .is_comptime = false,
-            .alignment = @alignOf(p_type),
-        };
+        fields[i] = param_or_positional_field(
+            positional.parser,
+            positional.name,
+            positional.value_count,
+            positional.required,
+            positional.default,
+        );
     }
 
     if (subcommands_len > 0) {
@@ -282,6 +300,7 @@ const Param = struct {
     default: ?[:0]const u8 = null,
     description: ?[:0]const u8 = null,
     value_count: ValueCount = .one,
+    required: bool = true,
 };
 
 const Flag = struct {
@@ -297,8 +316,10 @@ const Positional = struct {
     name: [:0]const u8,
     /// The parser used to convert the argument string to the correct type
     parser: [:0]const u8,
-    value_count: ValueCount = .one,
+    default: ?[:0]const u8 = null,
     description: ?[:0]const u8 = null,
+    value_count: ValueCount = .one,
+    required: bool = true,
     // TODO: default values? Not sure if that's a good idea...
 };
 
@@ -346,6 +367,13 @@ fn validate_parsers(parsers: anytype) void {
                 .{ field.name, fn_params[0].type },
             ));
         }
+        const ret_type = getParamTypeErrorStripped(field.name);
+        if (@typeInfo(ret_type) == .optional) {
+            @compileError(std.fmt.comptimePrint(
+                "error: parser '{s}' cannot return an optional type. Found return type {any}\n",
+                .{ field.name, ret_type },
+            ));
+        }
     }
 }
 
@@ -359,20 +387,16 @@ fn parse(comptime cmd: Command, parsers: anytype, alloc: Allocator) !ResultType(
 }
 
 test "cmd" {
-    const t1 = u8;
-    const t = [:0]const t1;
-    const default_val_arr = [_]t{"test"};
-    const default_val_sl = default_val_arr[0..];
-    const default_val_ptr: ?*const anyopaque = @as(*const anyopaque, @ptrCast(default_val_sl));
-    const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
-    _ = dp;
-    // @compileLog(dp);
-    const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "hello :)" };
+    const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "hello :)", .required = false };
     const param2 = Param{ .parser = "int", .name = "ts2", .short = "-t", .default = "19" };
-    const param3 = Param{ .parser = "int16", .name = "ts3", .short = "-t2", };
+    const param3 = Param{
+        .parser = "int16",
+        .name = "ts3",
+        .short = "-t2",
+    };
     const param4 = Param{ .parser = "str", .name = "ts4", .long = "--timestamp", .value_count = .one, .default = "howdy :D" };
     const flag1 = Flag{ .name = "f", .short = "-f" };
-    const pos1 = Positional{ .name = "pos", .parser = "int" };
+    const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
     const sub = Command{
         .name = "main",
         .params = &.{param4},
@@ -382,24 +406,23 @@ test "cmd" {
     };
     const cmd = Command{
         .name = "main",
-        .params = &.{param1, param2, param3}, //, param3 },
+        .params = &.{ param1, param2, param3 }, //, param3 },
         .flags = &.{flag1},
         .positionals = &.{pos1},
         .subcommands = &.{sub},
     };
     const Result = ResultType(cmd);
-    var result: Result = .{ .pos = 1, .subcommand = .{ .main = .{ .pos = 1, .f = true } }, .ts3 = 19 };
-    result.pos = 8;
+    const result: Result = .{ .subcommand = .{ .main = .{ .pos = 1, .f = true } }, .ts3 = 19 };
+    // result.pos = 8;
     // result.subcommand = .{ .main = .{ .pos = 19 } };
     // result.ts = &.{"hi :D"};
     // const result2: Result = undefined;
     _ = try parse(cmd, parseFns, std.testing.allocator);
-    // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}}, .f = true };
-    // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{}};
-    std.debug.print("typeof ts: {any}, ts: {s}\n", .{ @TypeOf(result.ts), result.ts });
+    std.debug.print("typeof ts: {any}, ts: {?s}\n", .{ @TypeOf(result.ts), result.ts });
     std.debug.print("typeof ts2: {any}, ts2: {d}\n", .{ @TypeOf(result.ts2), result.ts2 });
     std.debug.print("typeof ts3: {any}, ts3: {?}\n", .{ @TypeOf(result.ts3), result.ts3 });
     std.debug.print("typeof ts4: {any}, ts4: {s}\n", .{ @TypeOf(result.subcommand.main.ts4), result.subcommand.main.ts4 });
+    std.debug.print("typeof pos: {any}, pos: {any}\n", .{ @TypeOf(result.pos), result.pos });
     // std.debug.print("ts: ", .{ @TypeOf(result.ts), result.ts });
     // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
     // std.debug.print("{any}\n", .{@TypeOf(result.ts)});
