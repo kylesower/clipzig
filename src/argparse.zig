@@ -300,6 +300,10 @@ const Param = struct {
     default: ?[:0]const u8 = null,
     description: ?[:0]const u8 = null,
     value_count: ValueCount = .one,
+    /// Controls the resulting output type. If this isn't required, it outputs an optional.
+    /// If you still specify a default value and the user doesn't provide a value, the
+    /// default value will be used and the type will be an optional.
+    /// If you don't provide a default value, a default value of null will be provided.
     required: bool = true,
 };
 
@@ -319,8 +323,11 @@ const Positional = struct {
     default: ?[:0]const u8 = null,
     description: ?[:0]const u8 = null,
     value_count: ValueCount = .one,
+    /// Controls the resulting output type. If this isn't required, it outputs an optional.
+    /// If you still specify a default value and the user doesn't provide a value, the
+    /// default value will be used and the type will be an optional.
+    /// If you don't provide a default value, a default value of null will be provided.
     required: bool = true,
-    // TODO: default values? Not sure if that's a good idea...
 };
 
 const Command = struct {
