@@ -228,11 +228,8 @@ fn ResultType(cmd: Command) type {
                         break :blk @field(parseFns, param.parser)(d);
                     }
                 };
-                const default_arr = [_]p_type{default_val};
-                var index = 1;
-                const default_val_sl = default_arr[0..index];
-                index += 1;
-                const ptr: *const [1]p_type = @ptrCast(@as(*const [1]p_type, default_val_sl));
+                const default_val_sl: []const p_type = &.{default_val};
+                const ptr: *const []p_type = @ptrCast(@as(*const []const p_type, &default_val_sl));
                 const default_val_ptr: ?*const anyopaque = @ptrCast(ptr);
                 // const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
                 // @compileLog(dp.*);
@@ -275,7 +272,7 @@ fn ResultType(cmd: Command) type {
             // @compileLog(default_val_ptr);
             fields[i] = .{
                 .name = param.name,
-                .type = [1]p_type,
+                .type = []const p_type,
                 .default_value_ptr = default_val_ptr,
                 .is_comptime = false,
                 .alignment = @alignOf(p_type),
@@ -460,7 +457,7 @@ test "cmd" {
     const dp: *const []u8 = @ptrCast(@alignCast(default_val_ptr orelse return null));
     _ = dp;
     // @compileLog(dp);
-    const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "19" };
+    const param1 = Param{ .parser = "str", .name = "ts", .long = "--timestamp", .value_count = .many, .default = "hello :)" };
     // const param2 = Param{ .parser = "str", .name = "ts2", .default = "19", .short = "-t" };
     const flag1 = Flag{ .name = "f", .short = "-f" };
     const pos1 = Positional{ .name = "pos", .parser = "int" };
@@ -478,12 +475,13 @@ test "cmd" {
         .subcommands = &.{sub},
     };
     const Result = ResultType(cmd);
-    const result: Result = undefined;
-    const result2: Result = undefined;
+    const result: Result = .{.pos = 1, .subcommand = .{.main = .{.pos = 1, .f = true}}};
+    // const result2: Result = undefined;
     _ = try parse(cmd, parseFns, std.testing.allocator);
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{.main = .{.pos = 19}}, .f = true };
     // const result = Result{ .ts = 19, .pos = 8, .subcommand = .{}};
-    std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result.ts), result.ts });
-    std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
-    std.debug.print("{any}\n", .{@TypeOf(result.ts)});
+    std.debug.print("typeof ts: {any}, ts: {s}\n", .{ @TypeOf(result.ts), result.ts });
+    // std.debug.print("ts: ", .{ @TypeOf(result.ts), result.ts });
+    // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
+    // std.debug.print("{any}\n", .{@TypeOf(result.ts)});
 }
