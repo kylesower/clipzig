@@ -22,14 +22,14 @@ fn parseStr(in: [:0]const u8) []const u8 {
     return in;
 }
 
-var parseFns = .{ .int = parseu8, .ts = parseTs, .ts2 = parseTs2, .str = parseStr, .int16 = parseu16 };
+var parse_fns = .{ .int = parseu8, .ts = parseTs, .ts2 = parseTs2, .str = parseStr, .int16 = parseu16 };
 
 /// Get the type of a param based on the parse function's return type.
 /// If the return type is an error union, this extracts the payload type from
 /// the error union.
 /// If the return type is an optional, this will still return an optional.
 fn getParamTypeErrorStripped(parser_name: [:0]const u8) type {
-    const ret_type = @typeInfo(@TypeOf(@field(parseFns, parser_name))).@"fn".return_type.?;
+    const ret_type = @typeInfo(@TypeOf(@field(parse_fns, parser_name))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
     const ret_type_final = if (ret_type_info == .error_union)
         ret_type_info.error_union.payload
@@ -48,7 +48,7 @@ fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const
     }.parse;
 }
 
-fn array_contains_string(haystack: [1000][:0]const u8, needle: [:0]const u8, haystack_len: usize) bool {
+fn arrayContainsString(haystack: [1000][:0]const u8, needle: [:0]const u8, haystack_len: usize) bool {
     for (haystack[0..haystack_len]) |h| {
         if (std.mem.eql(u8, h, needle)) {
             return true;
@@ -57,7 +57,7 @@ fn array_contains_string(haystack: [1000][:0]const u8, needle: [:0]const u8, hay
     return false;
 }
 
-fn validate_command_structure(cmd: Command) void {
+fn validateCommandStructure(cmd: Command) void {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     const positionals = cmd.positionals orelse &.{};
@@ -73,20 +73,20 @@ fn validate_command_structure(cmd: Command) void {
             @compileError("Either a long or short specifier for the parameter must be specified");
         }
         if (param.long) |long| {
-            if (array_contains_string(all_the_names, long, all_the_names_len)) {
+            if (arrayContainsString(all_the_names, long, all_the_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
             }
             all_the_names[all_the_names_len] = long;
             all_the_names_len += 1;
         }
         if (param.short) |short| {
-            if (array_contains_string(all_the_names, short, all_the_names_len)) {
+            if (arrayContainsString(all_the_names, short, all_the_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
             }
             all_the_names[all_the_names_len] = short;
             all_the_names_len += 1;
         }
-        if (array_contains_string(struct_names, param.name, struct_names_len)) {
+        if (arrayContainsString(struct_names, param.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{param.name}));
         }
         if (param.required and param.default != null) {
@@ -105,20 +105,20 @@ fn validate_command_structure(cmd: Command) void {
             @compileError("Either a long or short specifier for the parameter must be specified");
         }
         if (flag.long) |long| {
-            if (array_contains_string(all_the_names, long, all_the_names_len)) {
+            if (arrayContainsString(all_the_names, long, all_the_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
             }
             all_the_names[all_the_names_len] = long;
             all_the_names_len += 1;
         }
         if (flag.short) |short| {
-            if (array_contains_string(all_the_names, short, all_the_names_len)) {
+            if (arrayContainsString(all_the_names, short, all_the_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
             }
             all_the_names[all_the_names_len] = short;
             all_the_names_len += 1;
         }
-        if (array_contains_string(struct_names, flag.name, struct_names_len)) {
+        if (arrayContainsString(struct_names, flag.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{flag.name}));
         }
         struct_names[struct_names_len] = flag.name;
@@ -136,7 +136,7 @@ fn validate_command_structure(cmd: Command) void {
                 @compileError("Cannot have multiple positionals that take more than one value");
             }
         }
-        if (array_contains_string(struct_names, positional.name, struct_names_len)) {
+        if (arrayContainsString(struct_names, positional.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{positional.name}));
         }
         struct_names[struct_names_len] = positional.name;
@@ -144,7 +144,7 @@ fn validate_command_structure(cmd: Command) void {
     }
 
     for (subcommands) |subcommand| {
-        if (array_contains_string(struct_names, subcommand.name, struct_names_len)) {
+        if (arrayContainsString(struct_names, subcommand.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{subcommand.name}));
         }
         struct_names[struct_names_len] = subcommand.name;
@@ -152,11 +152,11 @@ fn validate_command_structure(cmd: Command) void {
     }
 
     for (subcommands) |subcommand| {
-        validate_command_structure(subcommand);
+        validateCommandStructure(subcommand);
     }
 }
 
-fn param_or_positional_field(
+fn paramOrPositionalField(
     parser: [:0]const u8,
     name: [:0]const u8,
     value_count: ValueCount,
@@ -210,17 +210,18 @@ fn param_or_positional_field(
 /// Convert all the parameters into a struct based on the function signatures of the parsers
 /// and the default values of the params.
 fn ResultType(cmd: Command, parsers: anytype) type {
-    validate_command_structure(cmd);
+    validateCommandStructure(cmd);
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     const positionals = cmd.positionals orelse &.{};
-    // They can theoretically pass an empty slice, in which case we want 0 subcommands_len
-    const subcommands_len = if (cmd.subcommands) |sub| @min(1, sub.len) else 0;
+    // They can theoretically pass an empty slice, in which case we want 0 additional fields for
+    // the subcommands
+    const subcommands_addtl_field = if (cmd.subcommands) |sub| @min(1, sub.len) else 0;
     const subcommands = cmd.subcommands orelse &.{};
 
-    var fields: [params.len + flags.len + positionals.len + subcommands_len]std.builtin.Type.StructField = undefined;
+    var fields: [params.len + flags.len + positionals.len + subcommands_addtl_field]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        fields[i] = param_or_positional_field(
+        fields[i] = paramOrPositionalField(
             param.parser,
             param.name,
             param.value_count,
@@ -241,7 +242,7 @@ fn ResultType(cmd: Command, parsers: anytype) type {
     }
 
     for (params.len + flags.len.., positionals) |i, positional| {
-        fields[i] = param_or_positional_field(
+        fields[i] = paramOrPositionalField(
             positional.parser,
             positional.name,
             positional.value_count,
@@ -251,9 +252,9 @@ fn ResultType(cmd: Command, parsers: anytype) type {
         );
     }
 
-    if (subcommands_len > 0) {
-        var subcommands_enum_fields: [subcommands_len]std.builtin.Type.EnumField = undefined;
-        var subcommands_union_fields: [subcommands_len]std.builtin.Type.UnionField = undefined;
+    if (subcommands.len > 0) {
+        var subcommands_enum_fields: [subcommands.len]std.builtin.Type.EnumField = undefined;
+        var subcommands_union_fields: [subcommands.len]std.builtin.Type.UnionField = undefined;
         for (0.., subcommands) |i, subcommand| {
             subcommands_enum_fields[i] = .{
                 .name = subcommand.name,
@@ -268,7 +269,7 @@ fn ResultType(cmd: Command, parsers: anytype) type {
         }
 
         const subcommands_enum = @Type(.{ .@"enum" = .{
-            .tag_type = std.math.IntFittingRange(0, subcommands_len - 1),
+            .tag_type = std.math.IntFittingRange(0, subcommands.len - 1),
             .fields = subcommands_enum_fields[0..],
             .decls = &.{},
             .is_exhaustive = true,
@@ -281,9 +282,9 @@ fn ResultType(cmd: Command, parsers: anytype) type {
             .fields = subcommands_union_fields[0..],
         } });
 
-        const subcommands_opt = @Type(.{.optional = .{
+        const subcommands_opt = @Type(.{ .optional = .{
             .child = subcommands_tagged_union,
-        }});
+        } });
 
         fields[fields.len - 1] = .{
             .name = "subcommand",
@@ -442,7 +443,6 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
                 @field(result, param.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(param.parser)).initCapacity(alloc, 0);
             } else if (param.default != null) {
                 const default = try getParser(parsers, param.parser)(param.default.?);
-                std.debug.print("setting default val {s} for param {s}\n", .{default, param.name});
                 @field(result, param.name) = default;
             }
         }
@@ -477,7 +477,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
             inline for (subcommands) |subcommand| {
                 if (std.mem.eql(u8, arg, subcommand.name)) {
                     const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
-                    @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1..], alloc));
+                    @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1 ..], alloc));
                     // TODO: ensure all required fields are populated
                     break :wh;
                 }
@@ -495,94 +495,36 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
 
         if (cmd.params) |params| {
             inline for (params) |param| {
-                if (std.mem.eql(u8, param.name, "ts4")) {
-                    std.debug.print("checking param ts4\n", .{});
-                }
                 if (matchesShortOrLong(arg, param.short, param.long)) {
                     i += 1;
                     if (i >= args.len) {
                         std.debug.print("Failed to get value for argument {s}\n", .{arg});
                         return error.InvalidArguments;
-                        // break;
                     }
                     arg = args[i];
                     const val = try getParser(parsers, param.parser)(arg);
-                    if (std.mem.eql(u8, param.name, "ts4")) {
-                        std.debug.print("checking param ts4: got val {any}\n", .{val});
-                    }
                     if (param.value_count == .one) {
-                        if (std.mem.eql(u8, param.name, "ts4")) {
-                            std.debug.print("checking param ts4: set val {any}\n", .{val});
-                        }
                         @field(result, param.name) = val;
                     } else {
                         const list = &@field(result, param.name);
                         try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
-                    continue :wh;
+                        continue :wh;
+                    }
                 }
             }
-        }
 
-        if (cmd.positionals) |positionals| {
-            _ = positionals;
-        }
-
-        // if (flag_to_param_data.get(arg)) |pdata| {
-        //     if (pdata.param_type == .flag) {
-        //         @field(result, pdata.name) = true;
-        //     } else if (pdata.param_type == .param) {
-        //         i += 1;
-        //         if (i >= args.len) {
-        //             std.debug.print("Failed to get value for argument {s}\n", .{arg});
-        //             return error.InvalidArguments;
-        //             // break;
-        //         }
-        //         arg = args[i];
-        //         @field(result, pdata) = try getParser(parsers, pdata.name)(arg);
-        //     }
-        // }
-        //
-        // if (cmd.params) |params| {
-        //     inline for (params) |param| {
-        //         const flags_to_check = &.{ param.short, param.long };
-        //         inline for (flags_to_check) |flag_opt| {
-        //             if (flag_opt) |flag| {
-        //                 if (std.mem.eql(u8, flag, arg)) {
-        //                     std.debug.print("found flag: {s}\n", .{flag});
-        //                     i += 1;
-        //                     if (i >= args.len) {
-        //                         std.debug.print("Failed to get next arg for flag {s}\n", .{flag});
-        //                         break;
-        //                     }
-        //                     arg = args[i];
-        //                     const res_type = getParamTypeErrorStripped(param.parser);
-        //                     const arg_parsed: res_type = try getParser(parsers, param.parser)(arg);
-        //                     std.debug.print("parsed value: {any}\n", .{arg_parsed});
-        //                     if (param.value_count == .many) {
-        //                         var sl = @field(result, param.name);
-        //                         try sl.append(alloc, arg_parsed);
-        //                     } else {
-        //                         std.debug.print("param {s} is not many\n", .{param.name});
-        //                         @field(result, param.name) = arg_parsed;
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //     }
+            if (cmd.positionals) |positionals| {
+                _ = positionals;
+            }
         }
     }
 
     if (cmd.params) |params| {
         inline for (params) |param| {
             if (param.value_count == .many) {
-                std.debug.print("checking default for {s}\n", .{param.name});
                 const list = &@field(result, param.name);
                 if (list.items.len == 0 and param.default != null) {
-                    std.debug.print("adding default value to param {s}\n", .{param.name});
                     try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
-                    std.debug.print("appended value to {s}\n", .{param.name});
-                } else {
-                    std.debug.print("list len is {d}, default is {?s}\n", .{ list.items.len, param.default });
                 }
             }
         }
@@ -629,7 +571,7 @@ test "cmd" {
         .positionals = &.{pos1},
         .subcommands = &.{sub},
     };
-    const Result = ResultType(cmd, parseFns);
+    const Result = ResultType(cmd, parse_fns);
     var result: Result = .{
         .subcommand = .{ .main = .{
             .pos = 1,
@@ -638,7 +580,7 @@ test "cmd" {
         .ts3 = 19,
         .ts2 = 9,
     };
-    const res_sub: ResultType(sub, parseFns) = .{};
+    const res_sub: ResultType(sub, parse_fns) = .{};
     std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
     // result.pos = 8;
     // result.subcommand = .{ .main = .{ .pos = 19 } };
@@ -656,7 +598,7 @@ test "cmd" {
     //
     // // const args = try std.process.argsAlloc(std.testing.allocator);
     var args = [_][:0]const u8{ "-t", "1", "main" }; //  , "--timestamp", "19", "--timestamp", "17"};
-    var res = try parse(cmd, parseFns, args[0..], std.testing.allocator);
+    var res = try parse(cmd, parse_fns, args[0..], std.testing.allocator);
     defer res.ts.deinit(std.testing.allocator);
     try result.ts.append(std.testing.allocator, "test");
     defer result.ts.deinit(std.testing.allocator);
