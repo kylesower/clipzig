@@ -433,7 +433,8 @@ fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const 
     return false;
 }
 
-fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]u8, alloc: Allocator) !ResultType(cmd, parsers) {
+fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, alloc: Allocator) !ResultType(cmd, parsers) {
+    const args = args_including_exe[1..];
     var result: ResultType(cmd, parsers) = undefined;
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -467,14 +468,14 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]u8, alloc: Allocat
     }
 
     var i: usize = 0;
-    comptime var positional_ind: usize = 0;
+    var positional_ind: usize = 0;
     wh: while (i < args.len) : (i += 1) {
         var arg = args[i];
         // I would use hashmap lookups instead of all these loops, but can't do that due to comptime.
         inline for (subcommands) |subcommand| {
             if (std.mem.eql(u8, arg, subcommand.name)) {
                 const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
-                @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1 ..], alloc));
+                @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i..], alloc));
                 // TODO: ensure all required fields are populated
                 break :wh;
             }
@@ -510,14 +511,21 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]u8, alloc: Allocat
             std.debug.print("Unrecognized argument: {s}\n", .{arg});
             return error.UnrecognizedArgument;
         }
-        const positional = positionals[positional_ind];
-        const val = try getParser(parsers, positional.parser)(arg);
-        if (positional.value_count == .one) {
-            @field(result, positionals[positional_ind].name) = val;
-            positional_ind += 1;
-        } else {
-            const list = &@field(result, positional.name);
-            try list.append(alloc, val);
+
+        // I hate this. I couldn't figure out another way to make it work with comptime.
+        inline for (0.., positionals) |j, positional| {
+            if (j == positional_ind) {
+                const val = try getParser(parsers, positional.parser)(arg);
+                if (positional.value_count == .one) {
+                    @field(result, positional.name) = val;
+                    positional_ind += 1;
+                    break;
+                } else {
+                    const list = &@field(result, positional.name);
+                    try list.append(alloc, val);
+                    break;
+                }
+            }
         }
     }
 
@@ -658,9 +666,11 @@ pub fn main() !void {
     };
 
     const flag1 = Flag{ .name = "f", .short = "-f" };
-    // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
-    const pos2 = Positional{
-        .name = "pos2",
+    const pos1 = Positional{ .name = "pos1", .parser = "int", .required = false };
+    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false };
+    const pos3 = Positional{ .name = "pos3", .parser = "str", .required = false };
+    const pos4 = Positional{
+        .name = "pos4",
         .parser = "int",
         .required = false,
         .value_count = .many,
@@ -669,7 +679,7 @@ pub fn main() !void {
     const sub = Command{
         .name = "subcmd",
         .params = &.{param4},
-        .positionals = &.{pos2},
+        .positionals = &.{pos4},
         .subcommands = &.{},
         .flags = &.{flag1},
     };
@@ -677,12 +687,15 @@ pub fn main() !void {
         .name = "main",
         .params = &.{ param1, param2, param3 }, //, param3 },
         .flags = &.{flag1},
-        .positionals = &.{pos2},
+        .positionals = &.{pos1, pos2, pos3},
         .subcommands = &.{sub},
     };
     const args = try std.process.argsAlloc(alloc);
     const res = try parse(cmd, parse_fns, args, alloc);
     std.debug.print("ts: {any}\n", .{res.ts});
+    std.debug.print("pos1: {any}\n", .{res.pos1});
+    std.debug.print("pos2: {any}\n", .{res.pos2});
+    std.debug.print("pos3: {?s}\n", .{res.pos3});
     std.debug.print("subcmd ts: {s}\n", .{res.subcommand.?.subcmd.ts});
-    std.debug.print("pos2: {any}\n", .{res.subcommand.?.subcmd.pos2});
+    std.debug.print("pos4: {any}\n", .{res.subcommand.?.subcmd.pos4});
 }
