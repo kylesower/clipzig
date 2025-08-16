@@ -441,6 +441,9 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
     const positionals = cmd.positionals orelse &.{};
     const subcommands = cmd.subcommands orelse &.{};
 
+    var found_params = std.StringArrayHashMap(void).init(alloc);
+    defer found_params.deinit();
+
     // Need to initialize all the things
     inline for (params) |param| {
         if (param.value_count == .many) {
@@ -448,6 +451,8 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
         } else if (param.default != null) {
             const default = try getParser(parsers, param.parser)(param.default.?);
             @field(result, param.name) = default;
+        } else if (!param.required and param.default == null) {
+            @field(result, param.name);
         }
     }
 
@@ -456,6 +461,8 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
             @field(result, positional.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(positional.parser)).initCapacity(alloc, 0);
         } else if (positional.default != null) {
             @field(result, positional.name) = positional.default.?;
+        } else if (!positional.required and positional.default == null) {
+            @field(result, positional.name) = null;
         }
     }
 
@@ -476,7 +483,6 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
             if (std.mem.eql(u8, arg, subcommand.name)) {
                 const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
                 @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i..], alloc));
-                // TODO: ensure all required fields are populated
                 break :wh;
             }
         }
@@ -503,6 +509,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
                     const list = &@field(result, param.name);
                     try list.append(alloc, val);
                 }
+                try found_params.put(param.name, {});
                 continue :wh;
             }
         }
@@ -519,10 +526,12 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
                 if (positional.value_count == .one) {
                     @field(result, positional.name) = val;
                     positional_ind += 1;
+                    try found_params.put(positional.name, {});
                     break;
                 } else {
                     const list = &@field(result, positional.name);
                     try list.append(alloc, val);
+                    try found_params.put(positional.name, {});
                     break;
                 }
             }
@@ -545,6 +554,26 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
             const list = &@field(result, positional.name);
             if (list.items.len == 0 and positional.default != null) {
                 try list.append(alloc, try getParser(parsers, positional.parser)(positional.default.?));
+            }
+        }
+    }
+
+    // Validate all required fields
+    for (params) |param| {
+        if (param.required) {
+            const exists = found_params.get(param.name);
+            if (exists == null) {
+                std.debug.print("Required parameter '{s}' not provided.\n", .{param.name});
+                return error.RequiredParamNotProvided;
+            }
+        }
+    }
+    for (positionals) |positional| {
+        if (positional.required) {
+            const exists = found_params.get(positional.name);
+            if (exists == null) {
+                std.debug.print("Required parameter '{s}' not provided.\n", .{positional.name});
+                return error.RequiredParamNotProvided;
             }
         }
     }
@@ -649,11 +678,15 @@ pub fn main() !void {
         .default = "hello :)",
         .required = false,
     };
-    const param2 = Param{ .parser = "int", .name = "ts2", .short = "-t" };
+    const param2 = Param{
+        .parser = "int",
+        .name = "ts2",
+        .short = "-ts2",
+    };
     const param3 = Param{
         .parser = "int16",
         .name = "ts3",
-        .short = "-t2",
+        .short = "-ts3",
     };
 
     const param4 = Param{
@@ -687,7 +720,7 @@ pub fn main() !void {
         .name = "main",
         .params = &.{ param1, param2, param3 }, //, param3 },
         .flags = &.{flag1},
-        .positionals = &.{pos1, pos2, pos3},
+        .positionals = &.{ pos1, pos2, pos3 },
         .subcommands = &.{sub},
     };
     const args = try std.process.argsAlloc(alloc);
