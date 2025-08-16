@@ -166,7 +166,7 @@ fn param_or_positional_field(
 ) std.builtin.Type.StructField {
     const p_type_raw = getParamTypeErrorStripped(parser);
     var p_type = if (value_count == .one) p_type_raw else std.ArrayListUnmanaged(p_type_raw);
-    p_type = if (required or value_count == .many) p_type else ?p_type;
+    p_type = if (!required and value_count == .one and default == null) ?p_type else p_type;
 
     // We use the parseFn with the default value string to determine the default value.
     // If the caller provided an invalid default value causing the parseFn to error,
@@ -185,6 +185,10 @@ fn param_or_positional_field(
                     .{ parser, d },
                 ));
             };
+            // if (std.mem.eql(u8, name, "ts4")) {
+            //     @compileLog("set default val for ts4: {any}\n", .{default_val});
+            //     @compileLog("type is", p_type);
+            // }
             break :outer @as(*const anyopaque, @ptrCast(&default_val));
         } else if (required) {
             break :outer null;
@@ -277,9 +281,13 @@ fn ResultType(cmd: Command, parsers: anytype) type {
             .fields = subcommands_union_fields[0..],
         } });
 
+        const subcommands_opt = @Type(.{.optional = .{
+            .child = subcommands_tagged_union,
+        }});
+
         fields[fields.len - 1] = .{
             .name = "subcommand",
-            .type = subcommands_tagged_union,
+            .type = subcommands_opt,
             .default_value_ptr = null,
             .is_comptime = false,
             .alignment = @alignOf(subcommands_tagged_union),
@@ -425,14 +433,17 @@ fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const 
 }
 
 fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: Allocator) !ResultType(cmd, parsers) {
-    validate_parsers(parsers);
     var result: ResultType(cmd, parsers) = undefined;
 
-    // Need to initialize all the arraylists
+    // Need to initialize all the things
     if (cmd.params) |params| {
         inline for (params) |param| {
             if (param.value_count == .many) {
                 @field(result, param.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(param.parser)).initCapacity(alloc, 0);
+            } else if (param.default != null) {
+                const default = try getParser(parsers, param.parser)(param.default.?);
+                std.debug.print("setting default val {s} for param {s}\n", .{default, param.name});
+                @field(result, param.name) = default;
             }
         }
     }
@@ -441,7 +452,21 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
         inline for (positionals) |positional| {
             if (positional.value_count == .many) {
                 @field(result, positional.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(positional.parser)).initCapacity(alloc, 0);
+            } else if (positional.default != null) {
+                @field(result, positional.name) = positional.default.?;
             }
+        }
+    }
+
+    if (cmd.flags) |flags| {
+        inline for (flags) |flag| {
+            @field(result, flag.name) = false;
+        }
+    }
+
+    if (cmd.subcommands) |s| {
+        if (s.len > 0) {
+            result.subcommand = null;
         }
     }
 
@@ -451,7 +476,8 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
         if (cmd.subcommands) |subcommands| {
             inline for (subcommands) |subcommand| {
                 if (std.mem.eql(u8, arg, subcommand.name)) {
-                    @field(&result.subcommand, subcommand.name) = try parse(subcommand, parsers, args[i + 1..], alloc);
+                    const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
+                    @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1..], alloc));
                     // TODO: ensure all required fields are populated
                     break :wh;
                 }
@@ -469,6 +495,9 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
 
         if (cmd.params) |params| {
             inline for (params) |param| {
+                if (std.mem.eql(u8, param.name, "ts4")) {
+                    std.debug.print("checking param ts4\n", .{});
+                }
                 if (matchesShortOrLong(arg, param.short, param.long)) {
                     i += 1;
                     if (i >= args.len) {
@@ -478,7 +507,13 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
                     }
                     arg = args[i];
                     const val = try getParser(parsers, param.parser)(arg);
+                    if (std.mem.eql(u8, param.name, "ts4")) {
+                        std.debug.print("checking param ts4: got val {any}\n", .{val});
+                    }
                     if (param.value_count == .one) {
+                        if (std.mem.eql(u8, param.name, "ts4")) {
+                            std.debug.print("checking param ts4: set val {any}\n", .{val});
+                        }
                         @field(result, param.name) = val;
                     } else {
                         const list = &@field(result, param.name);
@@ -603,6 +638,8 @@ test "cmd" {
         .ts3 = 19,
         .ts2 = 9,
     };
+    const res_sub: ResultType(sub, parseFns) = .{};
+    std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
     // result.pos = 8;
     // result.subcommand = .{ .main = .{ .pos = 19 } };
     // result.ts = &.{"hi :D"};
@@ -618,12 +655,17 @@ test "cmd" {
     // }
     //
     // // const args = try std.process.argsAlloc(std.testing.allocator);
-    var args = [_][:0]const u8{ "-t", "1" }; //  , "--timestamp", "19", "--timestamp", "17"};
+    var args = [_][:0]const u8{ "-t", "1", "main" }; //  , "--timestamp", "19", "--timestamp", "17"};
     var res = try parse(cmd, parseFns, args[0..], std.testing.allocator);
     defer res.ts.deinit(std.testing.allocator);
     try result.ts.append(std.testing.allocator, "test");
     defer result.ts.deinit(std.testing.allocator);
     std.debug.print("ts is {any}\n", .{res.ts.items[0]});
+    std.debug.print("ts is {any}\n", .{res.ts2});
+    if (res.subcommand) |s| {
+        std.debug.print("got subcommand: {any}\n", .{s});
+    }
+    // std.debug.print("ts is {any}\n", .{res.subcommand.?});
     // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result.ts), result.ts });
     // std.debug.print("typeof ts2: {any}, ts2: {d}\n", .{ @TypeOf(result.ts2), result.ts2 });
     // std.debug.print("typeof ts3: {any}, ts3: {d}\n", .{ @TypeOf(result.ts3), result.ts3 });
