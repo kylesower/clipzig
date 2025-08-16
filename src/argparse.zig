@@ -98,11 +98,10 @@ const Command = struct {
 fn getParserPayloadType(parsers: anytype, parser_name: [:0]const u8) type {
     const ret_type = @typeInfo(@TypeOf(@field(parsers, parser_name))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
-    const ret_type_final = if (ret_type_info == .error_union)
+    return if (ret_type_info == .error_union)
         ret_type_info.error_union.payload
     else
         ret_type;
-    return ret_type_final;
 }
 
 /// Returns the final param type in the result struct (which could be a slice or an optional)
@@ -427,17 +426,18 @@ fn strMatchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]con
     return false;
 }
 
-fn parseArgs(
+fn parseArgsWithParserValidation(
     comptime cmd: Command,
-    /// `parsers` should be a struct that maps the name of the parser to a parsing function.
-    /// Each parsing function takes an argument as a [:0]const u8 and returns the type
-    /// that you want the value to be parsed into. It's allowed to return an error.
-    /// If it does return an error, the parser will simply `try` the result.
     parsers: anytype,
-    /// Args should *not* include the executable.
     args: []const [:0]const u8,
     alloc: Allocator,
+    // Since we run this function recursively, we don't want to validate the parsers every single
+    // time. This check avoids that.
+    needs_parsers_validated: bool,
 ) !ResultType(cmd, parsers) {
+    if (needs_parsers_validated) {
+        validateParsers(parsers);
+    }
     var result: ResultType(cmd, parsers) = undefined;
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -485,7 +485,7 @@ fn parseArgs(
         inline for (subcommands) |subcommand| {
             if (std.mem.eql(u8, arg, subcommand.name)) {
                 const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommands"))).optional.child;
-                @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, try parseArgs(
+                @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, try parseArgsWithParserValidation(
                     subcommand,
                     parsers,
                     // I'm surprised this works even if i + 1 == args.len.
@@ -493,6 +493,7 @@ fn parseArgs(
                     // slice[slice.len..]
                     args[i + 1 ..],
                     alloc,
+                    false,
                 ));
                 break :wh;
             }
@@ -590,6 +591,16 @@ fn parseArgs(
     }
 
     return result;
+}
+
+fn parseArgs(
+    comptime cmd: Command,
+    parsers: anytype,
+    /// Args should *not* include the executable.
+    args: []const [:0]const u8,
+    alloc: Allocator,
+) !ResultType(cmd, parsers) {
+    return parseArgsWithParserValidation(cmd, parsers, args, alloc, true);
 }
 
 fn parse(
