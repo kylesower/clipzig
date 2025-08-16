@@ -1,6 +1,97 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const NumVals = enum {
+    one,
+    many,
+};
+
+const Param = struct {
+    /// The name of the param in the result struct.
+    name: [:0]const u8,
+    /// The name of the parser used to convert the argument string to the correct type.
+    parser: [:0]const u8,
+    /// Short flag used to specify this parameter. One of short or long is required,
+    /// and you can of course provide both.
+    short: ?[:0]const u8 = null,
+    /// Long flag used to specify this parameter.
+    long: ?[:0]const u8 = null,
+    /// Default value to use for the parameter. For parameters that take many values,
+    /// this will populate a single entry in the list if no values are provided
+    /// by the user.
+    default: ?[:0]const u8 = null,
+    /// Description that will show up in the help output.
+    description: ?[:0]const u8 = null,
+    /// Number of values this parameter can take (one or many). If it takes many,
+    /// it will be translated into an ArrayListUnmanaged in the output.
+    num_vals: NumVals = .one,
+    /// Arg parsing will fail if a required parameter is not provided.
+    /// If a parameter is required, you cannot specify a default value.
+    /// For parameters that take a single value and are not required, the
+    /// output type will be an optional.
+    required: bool = true,
+};
+
+const Positional = struct {
+    /// The name of the positional in the result struct
+    name: [:0]const u8,
+    /// The name of the parser used to convert the argument string to the correct type.
+    parser: [:0]const u8,
+    /// Default value to use for the parameter. For parameters that take many values,
+    /// this will populate a single entry in the list if no values are provided
+    /// by the user.
+    default: ?[:0]const u8 = null,
+    /// Description that will show up in the help output.
+    description: ?[:0]const u8 = null,
+    /// Number of values this parameter can take (one or many). If it takes many,
+    /// it will be translated into an ArrayListUnmanaged in the output.
+    /// Note that you can only have one positional parameter that takes many values
+    /// in the same command.
+    num_vals: NumVals = .one,
+    /// Arg parsing will fail if a required parameter is not provided.
+    /// If a parameter is required, you cannot specify a default value.
+    /// For parameters that take a single value and are not required, the
+    /// output type will be an optional.
+    required: bool = true,
+};
+
+const Flag = struct {
+    /// The name of the flag in the result struct.
+    name: [:0]const u8,
+    /// Short flag used to specify this parameter. One of short or long is required,
+    /// and you can of course provide both.
+    short: ?[:0]const u8 = null,
+    /// Long flag used to specify this parameter.
+    long: ?[:0]const u8 = null,
+    /// Description that will show up in the help output.
+    description: ?[:0]const u8 = null,
+};
+
+const Command = struct {
+    /// The name of the command or subcommand. If this is a subcommand, it can be accessed
+    /// from the parent like `cmd.subcommands.<name>`.
+    name: [:0]const u8,
+    /// Parameters that take a value, which is computed using a parser
+    params: ?[]const Param = null,
+    /// Boolean flags. All default to false, and are true if the flag is specified on the
+    /// command line
+    flags: ?[]const Flag = null,
+    /// Positional arguments. You can have more than one positional argument, but only
+    /// the first or the last positional argument is allowed to take many values.
+    positionals: ?[]const Positional = null,
+    /// Subcommands, which must come after any params/flags/positionals in the parent command.
+    /// In the resulting struct, the subcommands are a tagged union with the names
+    /// corresponding to the names of the subcommands.
+    /// Note that parsing of the parent command stops once a subcommand is detected.
+    /// This means that subcommands will terminate parsing of many-valued parameters,
+    /// for instance.
+    /// Additionally, subcommands *are* allowed to define flags with the same short/long
+    /// as parent commands. Any user input after the subcommand will be parsed into the subcommand.
+    subcommands: ?[]const Command = null,
+    /// Description that will show up in the help output.
+    description: ?[:0]const u8 = null,
+};
+
 fn parseu8(in: [:0]const u8) !u8 {
     return std.fmt.parseInt(u8, in, 10) catch {
         return 0;
@@ -22,13 +113,19 @@ fn parseStr(in: [:0]const u8) []const u8 {
     return in;
 }
 
-var parse_fns = .{ .int = parseu8, .ts = parseTs, .ts2 = parseTs2, .str = parseStr, .int16 = parseu16 };
+var parse_fns = .{
+    .int = parseu8,
+    .ts = parseTs,
+    .ts2 = parseTs2,
+    .str = parseStr,
+    .int16 = parseu16,
+};
 
 /// Get the type of a param based on the parse function's return type.
 /// If the return type is an error union, this extracts the payload type from
 /// the error union.
 /// If the return type is an optional, this will still return an optional.
-fn getParamTypeErrorStripped(parser_name: [:0]const u8) type {
+fn getParserPayloadType(parser_name: [:0]const u8) type {
     const ret_type = @typeInfo(@TypeOf(@field(parse_fns, parser_name))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
     const ret_type_final = if (ret_type_info == .error_union)
@@ -40,9 +137,9 @@ fn getParamTypeErrorStripped(parser_name: [:0]const u8) type {
 
 /// Retrieve a parser, but give it a signature that errors so that we can always use "try" to get the
 /// resulting type.
-fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const u8) anyerror!getParamTypeErrorStripped(parser_name) {
+fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const u8) anyerror!getParserPayloadType(parser_name) {
     return struct {
-        fn parse(input: [:0]const u8) !getParamTypeErrorStripped(parser_name) {
+        fn parse(input: [:0]const u8) !getParserPayloadType(parser_name) {
             return @field(parsers, parser_name)(input);
         }
     }.parse;
@@ -57,6 +154,7 @@ fn arrayContainsString(haystack: [1000][:0]const u8, needle: [:0]const u8, hayst
     return false;
 }
 
+/// Ensures all constraints about the command are enforced.
 fn validateCommandStructure(cmd: Command) void {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -127,7 +225,7 @@ fn validateCommandStructure(cmd: Command) void {
 
     var num_positionals_many = 0;
     for (positionals) |positional| {
-        if (positional.value_count == .many) {
+        if (positional.num_vals == .many) {
             num_positionals_many += 1;
             if (num_positionals_many > 1) {
                 @compileError("Cannot have multiple positionals that take more than one value");
@@ -156,55 +254,16 @@ fn validateCommandStructure(cmd: Command) void {
     }
 }
 
-fn paramOrPositionalField(
+/// Returns the final param type in the result struct
+fn getParamType(
     parser: [:0]const u8,
-    name: [:0]const u8,
-    value_count: ValueCount,
+    num_vals: NumVals,
     required: bool,
-    default: ?[:0]const u8,
-    parsers: anytype,
-) std.builtin.Type.StructField {
-    const p_type_raw = getParamTypeErrorStripped(parser);
-    var p_type = if (value_count == .one) p_type_raw else std.ArrayListUnmanaged(p_type_raw);
-    p_type = if (!required and value_count == .one and default == null) ?p_type else p_type;
-
-    // We use the parseFn with the default value string to determine the default value.
-    // If the caller provided an invalid default value causing the parseFn to error,
-    // we have to provide a nice compileError, or else it's very hard to figure out
-    // what went wrong.
-    const default_val_ptr = outer: {
-        if (value_count == .many) {
-            // We can't put the default value in here. We do it in the parse function instead.
-            const items: []p_type_raw = &.{};
-            const default_val_list = p_type{ .items = items };
-            break :outer @as(*const anyopaque, @ptrCast(&default_val_list));
-        } else if (default) |d| {
-            const default_val: p_type = getParser(parsers, parser)(d) catch {
-                @compileError(std.fmt.comptimePrint(
-                    "Failed to compute default value using parser '{s}' using default value string '{s}'\n",
-                    .{ parser, d },
-                ));
-            };
-            // if (std.mem.eql(u8, name, "ts4")) {
-            //     @compileLog("set default val for ts4: {any}\n", .{default_val});
-            //     @compileLog("type is", p_type);
-            // }
-            break :outer @as(*const anyopaque, @ptrCast(&default_val));
-        } else if (required) {
-            break :outer null;
-        } else {
-            const default_val: p_type = null;
-            break :outer @as(*const anyopaque, @ptrCast(&default_val));
-        }
-    };
-
-    return .{
-        .name = name,
-        .type = p_type,
-        .default_value_ptr = default_val_ptr,
-        .is_comptime = false,
-        .alignment = @alignOf(p_type),
-    };
+    has_default: bool,
+) type {
+    var p_type = getParserPayloadType(parser);
+    p_type = if (num_vals == .one) p_type else std.ArrayListUnmanaged(p_type);
+    return if (!required and num_vals == .one and !has_default) ?p_type else p_type;
 }
 
 /// Convert all the parameters into a struct based on the function signatures of the parsers
@@ -221,14 +280,19 @@ fn ResultType(cmd: Command, parsers: anytype) type {
 
     var fields: [params.len + flags.len + positionals.len + subcommands_addtl_field]std.builtin.Type.StructField = undefined;
     for (0.., params) |i, param| {
-        fields[i] = paramOrPositionalField(
+        const param_type = getParamType(
             param.parser,
-            param.name,
-            param.value_count,
+            param.num_vals,
             param.required,
-            param.default,
-            parsers,
+            param.default != null,
         );
+        fields[i] = .{
+            .name = param.name,
+            .type = param_type,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(param_type),
+        };
     }
 
     for (params.len.., flags) |i, flag| {
@@ -242,14 +306,19 @@ fn ResultType(cmd: Command, parsers: anytype) type {
     }
 
     for (params.len + flags.len.., positionals) |i, positional| {
-        fields[i] = paramOrPositionalField(
+        const positional_type = getParamType(
             positional.parser,
-            positional.name,
-            positional.value_count,
+            positional.num_vals,
             positional.required,
-            positional.default,
-            parsers,
+            positional.default != null,
         );
+        fields[i] = .{
+            .name = positional.name,
+            .type = positional_type,
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(positional_type),
+        };
     }
 
     if (subcommands.len > 0) {
@@ -287,7 +356,7 @@ fn ResultType(cmd: Command, parsers: anytype) type {
         } });
 
         fields[fields.len - 1] = .{
-            .name = "subcommand",
+            .name = "subcommands",
             .type = subcommands_opt,
             .default_value_ptr = null,
             .is_comptime = false,
@@ -302,75 +371,6 @@ fn ResultType(cmd: Command, parsers: anytype) type {
         .is_tuple = false,
     } });
 }
-
-const ValueCount = enum {
-    one,
-    many,
-};
-
-const Param = struct {
-    /// The name of the param in the result struct
-    name: [:0]const u8,
-    /// The parser used to convert the argument string to the correct type
-    parser: [:0]const u8,
-    short: ?[:0]const u8 = null,
-    long: ?[:0]const u8 = null,
-    /// Default value to use for the parameter. For parameters that take many values,
-    /// this will populate a single entry in the list if no values are provided
-    /// by the user.
-    default: ?[:0]const u8 = null,
-    description: ?[:0]const u8 = null,
-    value_count: ValueCount = .one,
-    /// Arg parsing will fail if a required parameter is not provided.
-    /// A parameter cannot be required and specify a default value.
-    /// For parameters that take a single value and are not required, the
-    /// output type will be an optional.
-    required: bool = true,
-};
-
-const Flag = struct {
-    /// The name of the flag in the result struct
-    name: [:0]const u8,
-    short: ?[:0]const u8 = null,
-    long: ?[:0]const u8 = null,
-    description: ?[:0]const u8 = null,
-};
-
-const Positional = struct {
-    /// The name of the positional in the result struct
-    name: [:0]const u8,
-    /// The parser used to convert the argument string to the correct type
-    parser: [:0]const u8,
-    /// Default value to use for the parameter. For parameters that take many values,
-    /// this will populate a single entry in the list if no values are provided
-    /// by the user.
-    default: ?[:0]const u8 = null,
-    description: ?[:0]const u8 = null,
-    value_count: ValueCount = .one,
-    /// Arg parsing will fail if a required parameter is not provided.
-    /// A parameter cannot be required and specify a default value.
-    /// For parameters that take a single value and are not required, the
-    /// output type will be an optional.
-    required: bool = true,
-};
-
-const Command = struct {
-    /// The name of the command or subcommand
-    name: [:0]const u8,
-    /// Parameters that take a value, which is computed using a parser
-    params: ?[]const Param = null,
-    /// Boolean flags. All default to false, and are true if the flag is specified on the
-    /// command line
-    flags: ?[]const Flag = null,
-    /// Positional arguments. You can have more than one positional argument, but only
-    /// the first or the last positional argument is allowed to take many values.
-    positionals: ?[]const Positional = null,
-    /// Subcommands, which must come after any params/flags/positionals in the parent command.
-    /// In the resulting struct, the subcommands are a tagged union with the names
-    /// corresponding to the names of the subcommands.
-    subcommands: ?[]const Command = null,
-    description: ?[:0]const u8 = null,
-};
 
 fn validateParsers(parsers: anytype) void {
     const parsers_info = @typeInfo(@TypeOf(parsers));
@@ -398,7 +398,7 @@ fn validateParsers(parsers: anytype) void {
                 .{ field.name, fn_params[0].type },
             ));
         }
-        const ret_type = getParamTypeErrorStripped(field.name);
+        const ret_type = getParserPayloadType(field.name);
         if (@typeInfo(ret_type) == .optional) {
             @compileError(std.fmt.comptimePrint(
                 "error: parser cannot return an optional type. Found return type {any} for parser '{s}'\n",
@@ -408,18 +408,7 @@ fn validateParsers(parsers: anytype) void {
     }
 }
 
-const FlagType = enum {
-    flag,
-    param,
-};
-
-const CommonParamData = struct {
-    value_count: ValueCount,
-    name: [:0]const u8,
-    param_type: FlagType,
-};
-
-fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const u8) bool {
+fn strMatchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const u8) bool {
     if (short) |s| {
         if (std.mem.eql(u8, arg, s)) {
             return true;
@@ -433,7 +422,19 @@ fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const 
     return false;
 }
 
-fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, alloc: Allocator) !ResultType(cmd, parsers) {
+fn parse(
+    comptime cmd: Command,
+    /// `parsers` should be a struct that maps the name of the parser to a parsing function.
+    /// Each parsing function takes an argument as a [:0]const u8 and returns the type
+    /// that you want the value to be parsed into. It's allowed to return an error.
+    /// If it does return an error, the parser will simply `try` the result.
+    parsers: anytype,
+    args_including_exe: [][:0]u8,
+    alloc: Allocator,
+) !ResultType(
+    cmd,
+    parsers,
+) {
     const args = args_including_exe[1..];
     var result: ResultType(cmd, parsers) = undefined;
     const params = cmd.params orelse &.{};
@@ -446,8 +447,8 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
 
     // Need to initialize all the things
     inline for (params) |param| {
-        if (param.value_count == .many) {
-            @field(result, param.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(param.parser)).initCapacity(alloc, 0);
+        if (param.num_vals == .many) {
+            @field(result, param.name) = try std.ArrayListUnmanaged(getParserPayloadType(param.parser)).initCapacity(alloc, 0);
         } else if (param.default != null) {
             const default = try getParser(parsers, param.parser)(param.default.?);
             @field(result, param.name) = default;
@@ -457,8 +458,8 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
     }
 
     inline for (positionals) |positional| {
-        if (positional.value_count == .many) {
-            @field(result, positional.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(positional.parser)).initCapacity(alloc, 0);
+        if (positional.num_vals == .many) {
+            @field(result, positional.name) = try std.ArrayListUnmanaged(getParserPayloadType(positional.parser)).initCapacity(alloc, 0);
         } else if (positional.default != null) {
             @field(result, positional.name) = positional.default.?;
         } else if (!positional.required and positional.default == null) {
@@ -471,7 +472,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
     }
 
     if (subcommands.len > 0) {
-        result.subcommand = null;
+        result.subcommands = null;
     }
 
     var i: usize = 0;
@@ -481,21 +482,21 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
         // I would use hashmap lookups instead of all these loops, but can't do that due to comptime.
         inline for (subcommands) |subcommand| {
             if (std.mem.eql(u8, arg, subcommand.name)) {
-                const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
-                @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i..], alloc));
+                const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommands"))).optional.child;
+                @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i..], alloc));
                 break :wh;
             }
         }
 
         inline for (flags) |flag| {
-            if (matchesShortOrLong(arg, flag.short, flag.long)) {
+            if (strMatchesShortOrLong(arg, flag.short, flag.long)) {
                 @field(result, flag.name) = true;
                 continue :wh;
             }
         }
 
         inline for (params) |param| {
-            if (matchesShortOrLong(arg, param.short, param.long)) {
+            if (strMatchesShortOrLong(arg, param.short, param.long)) {
                 i += 1;
                 if (i >= args.len) {
                     std.debug.print("Failed to get value for argument {s}\n", .{arg});
@@ -503,7 +504,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
                 }
                 arg = args[i];
                 const val = try getParser(parsers, param.parser)(arg);
-                if (param.value_count == .one) {
+                if (param.num_vals == .one) {
                     @field(result, param.name) = val;
                 } else {
                     const list = &@field(result, param.name);
@@ -523,7 +524,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
         inline for (0.., positionals) |j, positional| {
             if (j == positional_ind) {
                 const val = try getParser(parsers, positional.parser)(arg);
-                if (positional.value_count == .one) {
+                if (positional.num_vals == .one) {
                     @field(result, positional.name) = val;
                     positional_ind += 1;
                     try found_params.put(positional.name, {});
@@ -541,7 +542,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
     // If we didn't get any values for params/positionals that take many values,
     // we can set the default values.
     inline for (params) |param| {
-        if (param.value_count == .many) {
+        if (param.num_vals == .many) {
             const list = &@field(result, param.name);
             if (list.items.len == 0 and param.default != null) {
                 try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
@@ -550,7 +551,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args_including_exe: [][:0]u8, 
     }
 
     inline for (positionals) |positional| {
-        if (positional.value_count == .many) {
+        if (positional.num_vals == .many) {
             const list = &@field(result, positional.name);
             if (list.items.len == 0 and positional.default != null) {
                 try list.append(alloc, try getParser(parsers, positional.parser)(positional.default.?));
@@ -586,7 +587,7 @@ test "cmd" {
         .parser = "str",
         .name = "ts",
         .long = "--timestamp",
-        .value_count = .many,
+        .num_vals = .many,
         .default = "hello :)",
         .required = false,
     };
@@ -600,13 +601,13 @@ test "cmd" {
         .parser = "str",
         .name = "ts4",
         .long = "--timestamp",
-        .value_count = .one,
+        .num_vals = .one,
         .default = "howdy :D",
         .required = false,
     };
     const flag1 = Flag{ .name = "f", .short = "-f" };
     // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
-    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false, .value_count = .many };
+    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false, .num_vals = .many };
     const sub = Command{
         .name = "main",
         .params = &.{param4},
@@ -621,51 +622,16 @@ test "cmd" {
         .positionals = &.{pos2},
         .subcommands = &.{sub},
     };
-    // const Result = ResultType(cmd, parse_fns);
-    // var result: Result = .{
-    //     .subcommand = .{ .main = .{
-    //         .pos2 = &.{1},
-    //         .f = true,
-    //     } },
-    //     .ts3 = 19,
-    //     .ts2 = 9,
-    // };
     const res_sub: ResultType(sub, parse_fns) = .{};
     std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
-    // result.pos = 8;
-    // result.subcommand = .{ .main = .{ .pos = 19 } };
-    // result.ts = &.{"hi :D"};
-    // const result2: Result = undefined;
-    // if (result2.ts == undefined) {
-    //     std.debug.print("val is undefined");
-    //     // std.debug.print("flag: {any}\n", .{result2.ts.?.len});
-    // }
-    // result2.ts = &.{};
-    // if (result2.ts == undefined) {
-    //     std.debug.print("val is undefined");
-    //     // std.debug.print("flag: {any}\n", .{result2.ts.?.len});
-    // }
-    //
-    // // const args = try std.process.argsAlloc(std.testing.allocator);
     var args = [_][:0]const u8{ "-t", "1", "main" }; //  , "--timestamp", "19", "--timestamp", "17"};
     var res = try parse(cmd, parse_fns, args[0..], std.testing.allocator);
     defer res.ts.deinit(std.testing.allocator);
-    // try result.ts.append(std.testing.allocator, "test");
-    // defer result.ts.deinit(std.testing.allocator);
     std.debug.print("ts is {any}\n", .{res.ts.items[0]});
     std.debug.print("ts is {any}\n", .{res.ts2});
     if (res.subcommand) |s| {
         std.debug.print("got subcommand: {any}\n", .{s});
     }
-    // std.debug.print("ts is {any}\n", .{res.subcommand.?});
-    // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result.ts), result.ts });
-    // std.debug.print("typeof ts2: {any}, ts2: {d}\n", .{ @TypeOf(result.ts2), result.ts2 });
-    // std.debug.print("typeof ts3: {any}, ts3: {d}\n", .{ @TypeOf(result.ts3), result.ts3 });
-    // std.debug.print("typeof ts4: {any}, ts4: {s}\n", .{ @TypeOf(result.subcommand.main.ts4), result.subcommand.main.ts4 });
-    // std.debug.print("typeof pos: {any}, pos: {any}\n", .{ @TypeOf(result.pos), result.pos });
-    // // std.debug.print("ts: ", .{ @TypeOf(result.ts), result.ts });
-    // // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
-    // // std.debug.print("{any}\n", .{@TypeOf(result.ts)});
 }
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -674,7 +640,7 @@ pub fn main() !void {
         .parser = "str",
         .name = "ts",
         .long = "--timestamp",
-        .value_count = .many,
+        .num_vals = .many,
         .default = "hello :)",
         .required = false,
     };
@@ -693,7 +659,7 @@ pub fn main() !void {
         .parser = "str",
         .name = "ts",
         .long = "--timestamp",
-        .value_count = .one,
+        .num_vals = .one,
         .default = "howdy :D",
         .required = false,
     };
@@ -706,7 +672,7 @@ pub fn main() !void {
         .name = "pos4",
         .parser = "int",
         .required = false,
-        .value_count = .many,
+        .num_vals = .many,
         .default = "91",
     };
     const sub = Command{
@@ -729,6 +695,6 @@ pub fn main() !void {
     std.debug.print("pos1: {any}\n", .{res.pos1});
     std.debug.print("pos2: {any}\n", .{res.pos2});
     std.debug.print("pos3: {?s}\n", .{res.pos3});
-    std.debug.print("subcmd ts: {s}\n", .{res.subcommand.?.subcmd.ts});
-    std.debug.print("pos4: {any}\n", .{res.subcommand.?.subcmd.pos4});
+    std.debug.print("subcmd ts: {s}\n", .{res.subcommands.?.subcmd.ts});
+    std.debug.print("pos4: {any}\n", .{res.subcommands.?.subcmd.pos4});
 }
