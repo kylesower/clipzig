@@ -372,7 +372,7 @@ const Command = struct {
     description: ?[:0]const u8 = null,
 };
 
-fn validate_parsers(parsers: anytype) void {
+fn validateParsers(parsers: anytype) void {
     const parsers_info = @typeInfo(@TypeOf(parsers));
     if (parsers_info != .@"struct") {
         @compileError("parsers must be a tuple that maps parser strings to parser functions");
@@ -435,97 +435,84 @@ fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const 
 
 fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: Allocator) !ResultType(cmd, parsers) {
     var result: ResultType(cmd, parsers) = undefined;
+    const params = cmd.params orelse &.{};
+    const flags = cmd.flags orelse &.{};
+    const positionals = cmd.positionals orelse &.{};
+    const subcommands = cmd.subcommands orelse &.{};
 
     // Need to initialize all the things
-    if (cmd.params) |params| {
-        inline for (params) |param| {
-            if (param.value_count == .many) {
-                @field(result, param.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(param.parser)).initCapacity(alloc, 0);
-            } else if (param.default != null) {
-                const default = try getParser(parsers, param.parser)(param.default.?);
-                @field(result, param.name) = default;
-            }
+    inline for (params) |param| {
+        if (param.value_count == .many) {
+            @field(result, param.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(param.parser)).initCapacity(alloc, 0);
+        } else if (param.default != null) {
+            const default = try getParser(parsers, param.parser)(param.default.?);
+            @field(result, param.name) = default;
         }
     }
 
-    if (cmd.positionals) |positionals| {
-        inline for (positionals) |positional| {
-            if (positional.value_count == .many) {
-                @field(result, positional.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(positional.parser)).initCapacity(alloc, 0);
-            } else if (positional.default != null) {
-                @field(result, positional.name) = positional.default.?;
-            }
+    inline for (positionals) |positional| {
+        if (positional.value_count == .many) {
+            @field(result, positional.name) = try std.ArrayListUnmanaged(getParamTypeErrorStripped(positional.parser)).initCapacity(alloc, 0);
+        } else if (positional.default != null) {
+            @field(result, positional.name) = positional.default.?;
         }
     }
 
-    if (cmd.flags) |flags| {
-        inline for (flags) |flag| {
-            @field(result, flag.name) = false;
-        }
+    inline for (flags) |flag| {
+        @field(result, flag.name) = false;
     }
 
-    if (cmd.subcommands) |s| {
-        if (s.len > 0) {
-            result.subcommand = null;
-        }
+    if (subcommands.len > 0) {
+        result.subcommand = null;
     }
 
     var i: usize = 0;
+    // var positional_ind = 0;
     wh: while (i < args.len) : (i += 1) {
         var arg = args[i];
-        if (cmd.subcommands) |subcommands| {
-            inline for (subcommands) |subcommand| {
-                if (std.mem.eql(u8, arg, subcommand.name)) {
-                    const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
-                    @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1 ..], alloc));
-                    // TODO: ensure all required fields are populated
-                    break :wh;
-                }
+        // I would use hashmap lookups instead of all these loops, but can't do that due to comptime.
+        inline for (subcommands) |subcommand| {
+            if (std.mem.eql(u8, arg, subcommand.name)) {
+                const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommand"))).optional.child;
+                @field(result, "subcommand") = @unionInit(subcommand_type, subcommand.name, try parse(subcommand, parsers, args[i + 1 ..], alloc));
+                // TODO: ensure all required fields are populated
+                break :wh;
             }
         }
 
-        if (cmd.flags) |flags| {
-            inline for (flags) |flag| {
-                if (matchesShortOrLong(arg, flag.short, flag.long)) {
-                    @field(result, flag.name) = true;
-                    continue :wh;
-                }
+        inline for (flags) |flag| {
+            if (matchesShortOrLong(arg, flag.short, flag.long)) {
+                @field(result, flag.name) = true;
+                continue :wh;
             }
         }
 
-        if (cmd.params) |params| {
-            inline for (params) |param| {
-                if (matchesShortOrLong(arg, param.short, param.long)) {
-                    i += 1;
-                    if (i >= args.len) {
-                        std.debug.print("Failed to get value for argument {s}\n", .{arg});
-                        return error.InvalidArguments;
-                    }
-                    arg = args[i];
-                    const val = try getParser(parsers, param.parser)(arg);
-                    if (param.value_count == .one) {
-                        @field(result, param.name) = val;
-                    } else {
-                        const list = &@field(result, param.name);
-                        try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
-                        continue :wh;
-                    }
-                }
-            }
-
-            if (cmd.positionals) |positionals| {
-                _ = positionals;
-            }
-        }
-    }
-
-    if (cmd.params) |params| {
         inline for (params) |param| {
-            if (param.value_count == .many) {
-                const list = &@field(result, param.name);
-                if (list.items.len == 0 and param.default != null) {
+            if (matchesShortOrLong(arg, param.short, param.long)) {
+                i += 1;
+                if (i >= args.len) {
+                    std.debug.print("Failed to get value for argument {s}\n", .{arg});
+                    return error.InvalidArguments;
+                }
+                arg = args[i];
+                const val = try getParser(parsers, param.parser)(arg);
+                if (param.value_count == .one) {
+                    @field(result, param.name) = val;
+                } else {
+                    const list = &@field(result, param.name);
                     try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
                 }
+                continue :wh;
+            }
+        }
+
+    }
+
+    inline for (params) |param| {
+        if (param.value_count == .many) {
+            const list = &@field(result, param.name);
+            if (list.items.len == 0 and param.default != null) {
+                try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
             }
         }
     }
