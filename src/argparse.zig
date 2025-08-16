@@ -126,12 +126,9 @@ fn validateCommandStructure(cmd: Command) void {
     }
 
     var num_positionals_many = 0;
-    for (0.., positionals) |i, positional| {
+    for (positionals) |positional| {
         if (positional.value_count == .many) {
             num_positionals_many += 1;
-            if (i != 0 and i != (positionals.len - 1)) {
-                @compileError("Cannot have a positional that takes many values unless it's the first or last positional.");
-            }
             if (num_positionals_many > 1) {
                 @compileError("Cannot have multiple positionals that take more than one value");
             }
@@ -141,6 +138,9 @@ fn validateCommandStructure(cmd: Command) void {
         }
         struct_names[struct_names_len] = positional.name;
         struct_names_len += 1;
+    }
+    if (num_positionals_many > 0 and positionals.len > 1) {
+        @compileError("Cannot have multiple positionals in the same command when one of them takes many values.");
     }
 
     for (subcommands) |subcommand| {
@@ -433,7 +433,7 @@ fn matchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]const 
     return false;
 }
 
-fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: Allocator) !ResultType(cmd, parsers) {
+fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]u8, alloc: Allocator) !ResultType(cmd, parsers) {
     var result: ResultType(cmd, parsers) = undefined;
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -467,7 +467,7 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
     }
 
     var i: usize = 0;
-    // var positional_ind = 0;
+    comptime var positional_ind: usize = 0;
     wh: while (i < args.len) : (i += 1) {
         var arg = args[i];
         // I would use hashmap lookups instead of all these loops, but can't do that due to comptime.
@@ -500,14 +500,29 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
                     @field(result, param.name) = val;
                 } else {
                     const list = &@field(result, param.name);
-                    try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
+                    try list.append(alloc, val);
                 }
                 continue :wh;
             }
         }
 
+        if (positional_ind >= positionals.len) {
+            std.debug.print("Unrecognized argument: {s}\n", .{arg});
+            return error.UnrecognizedArgument;
+        }
+        const positional = positionals[positional_ind];
+        const val = try getParser(parsers, positional.parser)(arg);
+        if (positional.value_count == .one) {
+            @field(result, positionals[positional_ind].name) = val;
+            positional_ind += 1;
+        } else {
+            const list = &@field(result, positional.name);
+            try list.append(alloc, val);
+        }
     }
 
+    // If we didn't get any values for params/positionals that take many values,
+    // we can set the default values.
     inline for (params) |param| {
         if (param.value_count == .many) {
             const list = &@field(result, param.name);
@@ -516,6 +531,16 @@ fn parse(comptime cmd: Command, parsers: anytype, args: [][:0]const u8, alloc: A
             }
         }
     }
+
+    inline for (positionals) |positional| {
+        if (positional.value_count == .many) {
+            const list = &@field(result, positional.name);
+            if (list.items.len == 0 and positional.default != null) {
+                try list.append(alloc, try getParser(parsers, positional.parser)(positional.default.?));
+            }
+        }
+    }
+
     return result;
 }
 
@@ -543,11 +568,12 @@ test "cmd" {
         .required = false,
     };
     const flag1 = Flag{ .name = "f", .short = "-f" };
-    const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
+    // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
+    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false, .value_count = .many };
     const sub = Command{
         .name = "main",
         .params = &.{param4},
-        .positionals = &.{pos1},
+        .positionals = &.{pos2},
         .subcommands = &.{},
         .flags = &.{flag1},
     };
@@ -555,18 +581,18 @@ test "cmd" {
         .name = "main",
         .params = &.{ param1, param2, param3 }, //, param3 },
         .flags = &.{flag1},
-        .positionals = &.{pos1},
+        .positionals = &.{pos2},
         .subcommands = &.{sub},
     };
-    const Result = ResultType(cmd, parse_fns);
-    var result: Result = .{
-        .subcommand = .{ .main = .{
-            .pos = 1,
-            .f = true,
-        } },
-        .ts3 = 19,
-        .ts2 = 9,
-    };
+    // const Result = ResultType(cmd, parse_fns);
+    // var result: Result = .{
+    //     .subcommand = .{ .main = .{
+    //         .pos2 = &.{1},
+    //         .f = true,
+    //     } },
+    //     .ts3 = 19,
+    //     .ts2 = 9,
+    // };
     const res_sub: ResultType(sub, parse_fns) = .{};
     std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
     // result.pos = 8;
@@ -587,8 +613,8 @@ test "cmd" {
     var args = [_][:0]const u8{ "-t", "1", "main" }; //  , "--timestamp", "19", "--timestamp", "17"};
     var res = try parse(cmd, parse_fns, args[0..], std.testing.allocator);
     defer res.ts.deinit(std.testing.allocator);
-    try result.ts.append(std.testing.allocator, "test");
-    defer result.ts.deinit(std.testing.allocator);
+    // try result.ts.append(std.testing.allocator, "test");
+    // defer result.ts.deinit(std.testing.allocator);
     std.debug.print("ts is {any}\n", .{res.ts.items[0]});
     std.debug.print("ts is {any}\n", .{res.ts2});
     if (res.subcommand) |s| {
@@ -603,4 +629,60 @@ test "cmd" {
     // // std.debug.print("ts: ", .{ @TypeOf(result.ts), result.ts });
     // // std.debug.print("typeof ts: {any}, ts: {any}\n", .{ @TypeOf(result2.ts), result2.ts });
     // // std.debug.print("{any}\n", .{@TypeOf(result.ts)});
+}
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const alloc = gpa.allocator();
+    const param1 = Param{
+        .parser = "str",
+        .name = "ts",
+        .long = "--timestamp",
+        .value_count = .many,
+        .default = "hello :)",
+        .required = false,
+    };
+    const param2 = Param{ .parser = "int", .name = "ts2", .short = "-t" };
+    const param3 = Param{
+        .parser = "int16",
+        .name = "ts3",
+        .short = "-t2",
+    };
+
+    const param4 = Param{
+        .parser = "str",
+        .name = "ts",
+        .long = "--timestamp",
+        .value_count = .one,
+        .default = "howdy :D",
+        .required = false,
+    };
+
+    const flag1 = Flag{ .name = "f", .short = "-f" };
+    // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
+    const pos2 = Positional{
+        .name = "pos2",
+        .parser = "int",
+        .required = false,
+        .value_count = .many,
+        .default = "91",
+    };
+    const sub = Command{
+        .name = "subcmd",
+        .params = &.{param4},
+        .positionals = &.{pos2},
+        .subcommands = &.{},
+        .flags = &.{flag1},
+    };
+    const cmd = Command{
+        .name = "main",
+        .params = &.{ param1, param2, param3 }, //, param3 },
+        .flags = &.{flag1},
+        .positionals = &.{pos2},
+        .subcommands = &.{sub},
+    };
+    const args = try std.process.argsAlloc(alloc);
+    const res = try parse(cmd, parse_fns, args, alloc);
+    std.debug.print("ts: {any}\n", .{res.ts});
+    std.debug.print("subcmd ts: {s}\n", .{res.subcommand.?.subcmd.ts});
+    std.debug.print("pos2: {any}\n", .{res.subcommand.?.subcmd.pos2});
 }
