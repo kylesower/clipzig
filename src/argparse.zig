@@ -119,7 +119,7 @@ fn getParamType(
 
 /// Convert all the parameters into a struct based on the function signatures of the parsers
 /// and the default values of the params.
-fn ResultType(cmd: Command, parsers: anytype) type {
+fn ParseResultPayload(cmd: Command, parsers: anytype) type {
     validateCommandStructure(cmd);
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -182,7 +182,7 @@ fn ResultType(cmd: Command, parsers: anytype) type {
                 .name = subcommand.name,
                 .value = i,
             };
-            const sub_type = ResultType(subcommand, parsers);
+            const sub_type = ParseResultPayload(subcommand, parsers);
             subcommands_union_fields[i] = .{
                 .name = subcommand.name,
                 .type = sub_type,
@@ -225,24 +225,36 @@ fn ResultType(cmd: Command, parsers: anytype) type {
     } });
 }
 
-fn deinit(in: anytype) void {
-    if (@hasField(@TypeOf(in), "subcommands")) {
-        if (in.subcommands) |s| {
-            // A litte bit ugly, but she does the job.
-            inline for (@typeInfo(@TypeOf(s)).@"union".fields) |field| {
-                if (std.mem.eql(u8, field.name, @tagName(std.meta.activeTag(s)))) {
-                    deinit(@field(s, field.name));
+fn ParseResult(comptime cmd: Command, parsers: anytype) type {
+    return struct {
+        const Self = @This();
+        parsed_cmd: ParseResultPayload(cmd, parsers),
+
+        fn deinit_cmd(in: anytype) void {
+            if (@hasField(@TypeOf(in), "subcommands")) {
+                if (in.subcommands) |s| {
+                    // A litte bit ugly, but she does the job.
+                    inline for (@typeInfo(@TypeOf(s)).@"union".fields) |field| {
+                        if (std.mem.eql(u8, field.name, @tagName(std.meta.activeTag(s)))) {
+                            Self.deinit_cmd(@field(s, field.name));
+                        }
+                    }
+                }
+            }
+
+            inline for (@typeInfo(@TypeOf(in)).@"struct".fields) |field| {
+                if (@typeInfo(field.type) == .@"struct") {
+                    if (@hasDecl(field.type, "deinit")) {
+                        @field(field.type, "deinit")(@field(in, field.name));
+                    }
                 }
             }
         }
-    }
-    inline for (@typeInfo(@TypeOf(in)).@"struct".fields) |field| {
-        if (@typeInfo(field.type) == .@"struct") {
-            if (@hasDecl(field.type, "deinit")) {
-                @field(field.type, "deinit")(@field(in, field.name));
-            }
+
+        pub fn deinit(in_raw: Self) void {
+            Self.deinit_cmd(in_raw.parsed_cmd);
         }
-    }
+    };
 }
 
 /// Retrieve a parser, but give it an error union signature so that we can always use
@@ -426,11 +438,11 @@ fn parseArgsWithParserValidation(
     // Since we run this function recursively, we don't want to validate the parsers every single
     // time. This check avoids that.
     needs_parsers_validated: bool,
-) !ResultType(cmd, parsers) {
+) !ParseResult(cmd, parsers) {
     if (needs_parsers_validated) {
         validateParsers(parsers);
     }
-    var result: ResultType(cmd, parsers) = undefined;
+    var result: ParseResultPayload(cmd, parsers) = undefined;
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     const positionals = cmd.positionals orelse &.{};
@@ -477,7 +489,7 @@ fn parseArgsWithParserValidation(
         inline for (subcommands) |subcommand| {
             if (std.mem.eql(u8, arg, subcommand.name)) {
                 const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommands"))).optional.child;
-                @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, try parseArgsWithParserValidation(
+                @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, (try parseArgsWithParserValidation(
                     subcommand,
                     parsers,
                     // I'm surprised this works even if i + 1 == args.len.
@@ -486,7 +498,7 @@ fn parseArgsWithParserValidation(
                     args[i + 1 ..],
                     alloc,
                     false,
-                ));
+                )).parsed_cmd);
                 break :wh;
             }
         }
@@ -583,7 +595,9 @@ fn parseArgsWithParserValidation(
         }
     }
 
-    return result;
+    return .{
+        .parsed_cmd = result,
+    };
 }
 
 fn parseArgs(
@@ -592,7 +606,7 @@ fn parseArgs(
     /// Args should *not* include the executable.
     args: []const [:0]const u8,
     alloc: Allocator,
-) !ResultType(cmd, parsers) {
+) !ParseResult(cmd, parsers) {
     return parseArgsWithParserValidation(cmd, parsers, args, alloc, true);
 }
 
@@ -604,10 +618,7 @@ fn parse(
     /// If it does return an error, the parser will simply `try` the result.
     parsers: anytype,
     alloc: Allocator,
-) !ResultType(
-    cmd,
-    parsers,
-) {
+) !ParseResult(cmd, parsers) {
     const args = try std.process.argsAlloc(alloc);
     return parseArgs(cmd, parsers, args[1..], alloc);
 }
@@ -696,7 +707,6 @@ test "cmd" {
         .positionals = &.{pos2},
         .subcommands = &.{sub},
     };
-    // const res_sub: ResultType(sub, parse_fns) = .{};
     // std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
     var args = [_][:0]const u8{
         "-t",
@@ -715,8 +725,10 @@ test "cmd" {
         "-p5",
         "6",
     }; //  , "--timestamp", "19", "--timestamp", "17"};
-    const res = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
-    defer deinit(res);
+    const res_full = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
+    defer res_full.deinit();
+    const res = res_full.parsed_cmd;
+
     std.debug.print("ts is {any}\n", .{res.ts2});
     std.debug.print("p5 is {any}\n", .{res.subcommands.?.sub.subcommands.?.sub2.p5});
     // defer res.ts.deinit(std.testing.allocator);
@@ -785,12 +797,10 @@ pub fn main() !void {
         .subcommands = &.{sub},
     };
 
-    // const Deinittable = struct {
-    //     deinitFn: *const fn(ptr: )
-    //     fn deinit()
-    // }
     const res = try parse(cmd, parse_fns, alloc);
-    defer deinit(res);
+    defer res.deinit();
+    const cmd_parsed = res.parsed_cmd;
+    std.debug.print("ts: {any}\n", .{cmd_parsed.ts});
 
     // const y = std.ArrayList(u8).init(alloc);
     // // std.ArrayList(u8).deinit(y);
