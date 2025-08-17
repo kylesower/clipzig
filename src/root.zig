@@ -1,11 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const parse_fns = @import("parsers.zig").parse_fns;
 
+/// Specifies whether a parameter/positional takes one value or many,
+/// which controls the output type (T vs. ArrayList(T)).
 const NumVals = enum {
     one,
     many,
 };
 
+/// A CLI argument specified by a flag (short or long or both).
 const Param = struct {
     /// The name of the param in the result struct.
     name: [:0]const u8,
@@ -32,6 +36,8 @@ const Param = struct {
     required: bool = true,
 };
 
+/// A CLI argument specified by position. Any arguments that are not interpreted
+/// as flags/params/subcommands will be interpreted as positionals.
 const Positional = struct {
     /// The name of the positional in the result struct
     name: [:0]const u8,
@@ -55,6 +61,7 @@ const Positional = struct {
     required: bool = true,
 };
 
+/// A boolean flag. Always defaults to false.
 const Flag = struct {
     /// The name of the flag in the result struct.
     name: [:0]const u8,
@@ -67,6 +74,8 @@ const Flag = struct {
     description: ?[:0]const u8 = null,
 };
 
+/// A command (or subcommand) that specifies all of its params, 
+/// positionals, flags, and subcommands.
 const Command = struct {
     /// The name of the command or subcommand. If this is a subcommand, it can be accessed
     /// from the parent like `cmd.subcommands.<name>`.
@@ -225,6 +234,9 @@ fn ParseResultPayload(cmd: Command, parsers: anytype) type {
     } });
 }
 
+/// The final result type from calling the `parse` function.
+/// Includes a comptime generated deinit function, which will 
+/// deinitialize all nested subcommands and their ArrayLists.
 fn ParseResult(comptime cmd: Command, parsers: anytype) type {
     return struct {
         const Self = @This();
@@ -600,7 +612,7 @@ fn parseArgsWithParserValidation(
     };
 }
 
-fn parseArgs(
+pub fn parseArgs(
     comptime cmd: Command,
     parsers: anytype,
     /// Args should *not* include the executable.
@@ -610,7 +622,12 @@ fn parseArgs(
     return parseArgsWithParserValidation(cmd, parsers, args, alloc, true);
 }
 
-fn parse(
+/// The primary parsing function. Reads the commandline arguments into an output struct
+/// whose fields are determined by the input Command. Every param, positional, and flag
+/// (which all have mandatory `name` fields) get added to the output struct as a field
+/// with the same `name`. All subcommands get constructed into a tagged union, which goes under
+/// the optional `subcommands` field in the output.
+pub fn parse(
     comptime cmd: Command,
     /// `parsers` should be a struct that maps the name of the parser to a parsing function.
     /// Each parsing function takes an argument as a [:0]const u8 and returns the type
@@ -621,195 +638,6 @@ fn parse(
 ) !ParseResult(cmd, parsers) {
     const args = try std.process.argsAlloc(alloc);
     return parseArgs(cmd, parsers, args[1..], alloc);
-}
-
-fn parseu8(in: [:0]const u8) !u8 {
-    return std.fmt.parseInt(u8, in, 10) catch {
-        return 0;
-    };
-}
-
-fn parseu16(in: [:0]const u8) !u16 {
-    return std.fmt.parseInt(u16, in, 10);
-}
-fn parseTs(in: [:0]const u8) !i64 {
-    return std.fmt.parseInt(i64, in, 10);
-}
-
-fn parseTs2(in: [:0]const u8) !i64 {
-    return std.fmt.parseInt(i64, in, 10);
-}
-
-fn parseStr(in: [:0]const u8) []const u8 {
-    return in;
-}
-fn parsef64(in: [:0]const u8) !f64 {
-    return std.fmt.parseFloat(f64, in);
-}
-
-var parse_fns = .{
-    .int = parseu8,
-    .ts = parseTs,
-    .ts2 = parseTs2,
-    .str = parseStr,
-    .int16 = parseu16,
-    .f64 = parsef64,
-};
-
-test "cmd" {
-    const param1 = Param{
-        .parser = "str",
-        .name = "ts",
-        .long = "--timestamp",
-        .num_vals = .many,
-        .default = "hello :)",
-        .required = false,
-    };
-    const param2 = Param{ .parser = "int", .name = "ts2", .short = "-t" };
-    const param3 = Param{
-        .parser = "int16",
-        .name = "ts3",
-        .short = "-t2",
-    };
-    const param4 = Param{
-        .parser = "str",
-        .name = "ts4",
-        .long = "--timestamp",
-        .num_vals = .one,
-        .default = "howdy :D",
-        .required = false,
-    };
-    const flag1 = Flag{ .name = "f", .short = "-f" };
-    // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
-    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false, .num_vals = .many };
-    const param5 = Param{
-        .parser = "str",
-        .name = "p5",
-        .long = "-p5",
-        .num_vals = .many,
-        .default = "1",
-        .required = false,
-    };
-    const sub2 = Command{
-        .name = "sub2",
-        .params = &.{param5},
-        .positionals = &.{},
-        .subcommands = &.{},
-        .flags = &.{},
-    };
-    const sub = Command{
-        .name = "sub",
-        .params = &.{param4},
-        .positionals = &.{pos2},
-        .subcommands = &.{sub2},
-        .flags = &.{flag1},
-    };
-    const cmd = Command{
-        .name = "main",
-        .params = &.{ param1, param2, param3 }, //, param3 },
-        .flags = &.{flag1},
-        .positionals = &.{pos2},
-        .subcommands = &.{sub},
-    };
-    // std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
-    var args = [_][:0]const u8{
-        "-t",
-        "1",
-        "-t2",
-        "1",
-        "sub",
-        "1",
-        "2",
-        "3",
-        "sub2",
-        "-p5",
-        "4",
-        "-p5",
-        "5",
-        "-p5",
-        "6",
-    }; //  , "--timestamp", "19", "--timestamp", "17"};
-    const res_full = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
-    defer res_full.deinit();
-    const res = res_full.parsed_cmd;
-    _ = res;
-
-    // std.debug.print("ts is {any}\n", .{res.ts2});
-    // std.debug.print("p5 is {any}\n", .{res.subcommands.?.sub.subcommands.?.sub2.p5});
-    // defer res.ts.deinit(std.testing.allocator);
-    // std.debug.print("ts is {any}\n", .{res.ts.items[0]});
-    // if (res.subcommands) |s| {
-    //     std.debug.print("got subcommand: {any}\n", .{s});
-    // }
-    // const x: []const u8 = &.{1};
-    // std.debug.print("{any}\n", .{x[1..]});
-}
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    const param1 = Param{
-        .parser = "str",
-        .name = "ts",
-        .long = "--timestamp",
-        .num_vals = .many,
-        .default = "hello :)",
-        .required = false,
-    };
-    const param2 = Param{
-        .parser = "int",
-        .name = "ts2",
-        .short = "-ts2",
-    };
-    const param3 = Param{
-        .parser = "int16",
-        .name = "ts3",
-        .short = "-ts3",
-    };
-
-    const param4 = Param{
-        .parser = "str",
-        .name = "ts",
-        .long = "--timestamp",
-        .num_vals = .one,
-        .default = "howdy :D",
-        .required = false,
-    };
-
-    const flag1 = Flag{ .name = "f", .short = "-f" };
-    const pos1 = Positional{ .name = "pos1", .parser = "int", .required = false };
-    const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false };
-    const pos3 = Positional{ .name = "pos3", .parser = "str", .required = false };
-    const pos4 = Positional{
-        .name = "pos4",
-        .parser = "int",
-        .required = false,
-        .num_vals = .many,
-        .default = "91",
-    };
-    const sub = Command{
-        .name = "subcmd",
-        .params = &.{param4},
-        .positionals = &.{pos4},
-        .subcommands = &.{},
-        .flags = &.{flag1},
-    };
-    const cmd = Command{
-        .name = "main",
-        .params = &.{ param1, param2, param3 }, //, param3 },
-        .flags = &.{flag1},
-        .positionals = &.{ pos1, pos2, pos3 },
-        .subcommands = &.{sub},
-    };
-
-    const res = try parse(cmd, parse_fns, alloc);
-    defer res.deinit();
-    const cmd_parsed = res.parsed_cmd;
-    std.debug.print("ts: {any}\n", .{cmd_parsed.ts});
-
-    // const y = std.ArrayList(u8).init(alloc);
-    // // std.ArrayList(u8).deinit(y);
-    // @field(@TypeOf(y), "deinit")(y);
 }
 
 test "parses command" {
