@@ -23,7 +23,7 @@ const Param = struct {
     /// Description that will show up in the help output.
     description: ?[:0]const u8 = null,
     /// Number of values this parameter can take (one or many). If it takes many,
-    /// it will be translated into an ArrayListUnmanaged in the output.
+    /// it will be translated into an ArrayList in the output.
     num_vals: NumVals = .one,
     /// Arg parsing will fail if a required parameter is not provided.
     /// If a parameter is required, you cannot specify a default value.
@@ -44,7 +44,7 @@ const Positional = struct {
     /// Description that will show up in the help output.
     description: ?[:0]const u8 = null,
     /// Number of values this parameter can take (one or many). If it takes many,
-    /// it will be translated into an ArrayListUnmanaged in the output.
+    /// it will be translated into an ArrayList in the output.
     /// Note that you can only have one positional parameter that takes many values
     /// in the same command.
     num_vals: NumVals = .one,
@@ -113,7 +113,7 @@ fn getParamType(
     has_default: bool,
 ) type {
     var p_type = getParserPayloadType(parsers, parser);
-    p_type = if (num_vals == .one) p_type else std.ArrayListUnmanaged(p_type);
+    p_type = if (num_vals == .one) p_type else std.ArrayList(p_type);
     return if (!required and num_vals == .one and !has_default) ?p_type else p_type;
 }
 
@@ -225,37 +225,28 @@ fn ResultType(cmd: Command, parsers: anytype) type {
     } });
 }
 
-fn parseu8(in: [:0]const u8) !u8 {
-    return std.fmt.parseInt(u8, in, 10) catch {
-        return 0;
-    };
+fn deinit(in: anytype) void {
+    if (@hasField(@TypeOf(in), "subcommands")) {
+        if (in.subcommands) |s| {
+            // A litte bit ugly, but she does the job.
+            inline for (@typeInfo(@TypeOf(s)).@"union".fields) |field| {
+                if (std.mem.eql(u8, field.name, @tagName(std.meta.activeTag(s)))) {
+                    deinit(@field(s, field.name));
+                }
+            }
+        }
+    }
+    inline for (@typeInfo(@TypeOf(in)).@"struct".fields) |field| {
+        if (@typeInfo(field.type) == .@"struct") {
+            if (@hasDecl(field.type, "deinit")) {
+                @field(field.type, "deinit")(@field(in, field.name));
+            }
+        }
+    }
 }
 
-fn parseu16(in: [:0]const u8) !u16 {
-    return std.fmt.parseInt(u16, in, 10);
-}
-fn parseTs(in: [:0]const u8) !i64 {
-    return std.fmt.parseInt(i64, in, 10);
-}
-
-fn parseTs2(in: [:0]const u8) !i64 {
-    return std.fmt.parseInt(i64, in, 10);
-}
-
-fn parseStr(in: [:0]const u8) []const u8 {
-    return in;
-}
-
-var parse_fns = .{
-    .int = parseu8,
-    .ts = parseTs,
-    .ts2 = parseTs2,
-    .str = parseStr,
-    .int16 = parseu16,
-};
-
-/// Retrieve a parser, but give it a signature that errors so that we can always use "try" to get the
-/// resulting type.
+/// Retrieve a parser, but give it an error union signature so that we can always use
+/// try/catch when we call the function.
 fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const u8) anyerror!getParserPayloadType(parsers, parser_name) {
     return struct {
         fn parse(input: [:0]const u8) !getParserPayloadType(parsers, parser_name) {
@@ -356,6 +347,7 @@ fn validateCommandStructure(cmd: Command) void {
         struct_names[struct_names_len] = positional.name;
         struct_names_len += 1;
     }
+
     if (num_positionals_many > 0 and positionals.len > 1) {
         @compileError("Cannot have multiple positionals in the same command when one of them takes many values.");
     }
@@ -450,7 +442,7 @@ fn parseArgsWithParserValidation(
     // Need to initialize all the things
     inline for (params) |param| {
         if (param.num_vals == .many) {
-            @field(result, param.name) = try std.ArrayListUnmanaged(getParserPayloadType(parsers, param.parser)).initCapacity(alloc, 0);
+            @field(result, param.name) = std.ArrayList(getParserPayloadType(parsers, param.parser)).init(alloc);
         } else if (param.default != null) {
             const default = try getParser(parsers, param.parser)(param.default.?);
             @field(result, param.name) = default;
@@ -461,7 +453,7 @@ fn parseArgsWithParserValidation(
 
     inline for (positionals) |positional| {
         if (positional.num_vals == .many) {
-            @field(result, positional.name) = try std.ArrayListUnmanaged(getParserPayloadType(parsers, positional.parser)).initCapacity(alloc, 0);
+            @field(result, positional.name) = std.ArrayList(getParserPayloadType(parsers, positional.parser)).init(alloc);
         } else if (positional.default != null) {
             @field(result, positional.name) = positional.default.?;
         } else if (!positional.required and positional.default == null) {
@@ -519,7 +511,7 @@ fn parseArgsWithParserValidation(
                     @field(result, param.name) = val;
                 } else {
                     const list = &@field(result, param.name);
-                    try list.append(alloc, val);
+                    try list.append(val);
                 }
                 try found_params.put(param.name, {});
                 continue :wh;
@@ -527,6 +519,7 @@ fn parseArgsWithParserValidation(
         }
 
         if (positional_ind >= positionals.len) {
+            // TODO: figure out how I want to handle errors like this.
             std.debug.print("Unrecognized argument: {s}\n", .{arg});
             return error.UnrecognizedArgument;
         }
@@ -542,7 +535,7 @@ fn parseArgsWithParserValidation(
                     break;
                 } else {
                     const list = &@field(result, positional.name);
-                    try list.append(alloc, val);
+                    try list.append(val);
                     try found_params.put(positional.name, {});
                     break;
                 }
@@ -556,7 +549,7 @@ fn parseArgsWithParserValidation(
         if (param.num_vals == .many) {
             const list = &@field(result, param.name);
             if (list.items.len == 0 and param.default != null) {
-                try list.append(alloc, try getParser(parsers, param.parser)(param.default.?));
+                try list.append(try getParser(parsers, param.parser)(param.default.?));
             }
         }
     }
@@ -565,7 +558,7 @@ fn parseArgsWithParserValidation(
         if (positional.num_vals == .many) {
             const list = &@field(result, positional.name);
             if (list.items.len == 0 and positional.default != null) {
-                try list.append(alloc, try getParser(parsers, positional.parser)(positional.default.?));
+                try list.append(try getParser(parsers, positional.parser)(positional.default.?));
             }
         }
     }
@@ -619,6 +612,35 @@ fn parse(
     return parseArgs(cmd, parsers, args[1..], alloc);
 }
 
+fn parseu8(in: [:0]const u8) !u8 {
+    return std.fmt.parseInt(u8, in, 10) catch {
+        return 0;
+    };
+}
+
+fn parseu16(in: [:0]const u8) !u16 {
+    return std.fmt.parseInt(u16, in, 10);
+}
+fn parseTs(in: [:0]const u8) !i64 {
+    return std.fmt.parseInt(i64, in, 10);
+}
+
+fn parseTs2(in: [:0]const u8) !i64 {
+    return std.fmt.parseInt(i64, in, 10);
+}
+
+fn parseStr(in: [:0]const u8) []const u8 {
+    return in;
+}
+
+var parse_fns = .{
+    .int = parseu8,
+    .ts = parseTs,
+    .ts2 = parseTs2,
+    .str = parseStr,
+    .int16 = parseu16,
+};
+
 test "cmd" {
     const param1 = Param{
         .parser = "str",
@@ -645,11 +667,26 @@ test "cmd" {
     const flag1 = Flag{ .name = "f", .short = "-f" };
     // const pos1 = Positional{ .name = "pos", .parser = "int", .required = false };
     const pos2 = Positional{ .name = "pos2", .parser = "int", .required = false, .num_vals = .many };
+    const param5 = Param{
+        .parser = "str",
+        .name = "p5",
+        .long = "-p5",
+        .num_vals = .many,
+        .default = "1",
+        .required = false,
+    };
+    const sub2 = Command{
+        .name = "sub2",
+        .params = &.{param5},
+        .positionals = &.{},
+        .subcommands = &.{},
+        .flags = &.{},
+    };
     const sub = Command{
-        .name = "main",
+        .name = "sub",
         .params = &.{param4},
         .positionals = &.{pos2},
-        .subcommands = &.{},
+        .subcommands = &.{sub2},
         .flags = &.{flag1},
     };
     const cmd = Command{
@@ -661,17 +698,36 @@ test "cmd" {
     };
     // const res_sub: ResultType(sub, parse_fns) = .{};
     // std.debug.print("res sub ts4 is {any}\n", .{res_sub.ts4});
-    var args = [_][:0]const u8{ "-t", "1", "-t2", "1", "main" }; //  , "--timestamp", "19", "--timestamp", "17"};
-    var res = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
-    defer res.ts.deinit(std.testing.allocator);
-    std.debug.print("ts is {any}\n", .{res.ts.items[0]});
+    var args = [_][:0]const u8{
+        "-t",
+        "1",
+        "-t2",
+        "1",
+        "sub",
+        "1",
+        "2",
+        "3",
+        "sub2",
+        "-p5",
+        "4",
+        "-p5",
+        "5",
+        "-p5",
+        "6",
+    }; //  , "--timestamp", "19", "--timestamp", "17"};
+    const res = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
+    defer deinit(res);
     std.debug.print("ts is {any}\n", .{res.ts2});
+    std.debug.print("p5 is {any}\n", .{res.subcommands.?.sub.subcommands.?.sub2.p5});
+    // defer res.ts.deinit(std.testing.allocator);
+    // std.debug.print("ts is {any}\n", .{res.ts.items[0]});
     if (res.subcommands) |s| {
         std.debug.print("got subcommand: {any}\n", .{s});
     }
     const x: []const u8 = &.{1};
     std.debug.print("{any}\n", .{x[1..]});
 }
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const alloc = gpa.allocator();
@@ -728,11 +784,15 @@ pub fn main() !void {
         .positionals = &.{ pos1, pos2, pos3 },
         .subcommands = &.{sub},
     };
+
+    // const Deinittable = struct {
+    //     deinitFn: *const fn(ptr: )
+    //     fn deinit()
+    // }
     const res = try parse(cmd, parse_fns, alloc);
-    std.debug.print("ts: {any}\n", .{res.ts});
-    std.debug.print("pos1: {any}\n", .{res.pos1});
-    std.debug.print("pos2: {any}\n", .{res.pos2});
-    std.debug.print("pos3: {?s}\n", .{res.pos3});
-    std.debug.print("subcmd ts: {s}\n", .{res.subcommands.?.subcmd.ts});
-    std.debug.print("pos4: {any}\n", .{res.subcommands.?.subcmd.pos4});
+    defer deinit(res);
+
+    // const y = std.ArrayList(u8).init(alloc);
+    // // std.ArrayList(u8).deinit(y);
+    // @field(@TypeOf(y), "deinit")(y);
 }
