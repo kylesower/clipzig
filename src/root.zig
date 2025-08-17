@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const parse_fns = @import("parsers.zig").parse_fns;
+pub const default_parsers = @import("parsers.zig").default_parsers;
+pub const extendDefaultParsers = @import("parsers.zig").extendDefaultParsers;
 
 /// Specifies whether a parameter/positional takes one value or many,
 /// which controls the output type (T vs. ArrayList(T)).
@@ -707,8 +708,32 @@ test "parses command" {
         },
     };
     const args1 = &.{"add", "1", "2", "3", "4"};
-    const res = try parseArgs(cmd_type, parse_fns, args1, std.testing.allocator);
+    const res = try parseArgs(cmd_type, default_parsers, args1, std.testing.allocator);
     defer res.deinit();
     const cmd = res.parsed_cmd;
     std.debug.print("nums to add: {any}\n", .{cmd.subcommands.?.add.values});
+}
+
+test "overwrite parser" {
+    const cmd_type: Command = .{
+        .name = "prog",
+        .positionals = &.{.{
+            .name = "value",
+            .num_vals = .one,
+            .parser = "u8",
+        }},
+    };
+    const parseFn = struct {
+        fn parseThing(in: [:0]const u8) !u16 {
+            _ = in;
+            return std.math.maxInt(u16);
+        }
+    }.parseThing;
+    const parsers = extendDefaultParsers(.{.u8 = parseFn});
+    const args = &.{"19"};
+    const res = try parseArgs(cmd_type, parsers, args, std.testing.allocator);
+    defer res.deinit();
+
+    try std.testing.expectEqual(@TypeOf(res.parsed_cmd.value), u16);
+    try std.testing.expectEqual(res.parsed_cmd.value, std.math.maxInt(u16));
 }
