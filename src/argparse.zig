@@ -643,6 +643,9 @@ fn parseTs2(in: [:0]const u8) !i64 {
 fn parseStr(in: [:0]const u8) []const u8 {
     return in;
 }
+fn parsef64(in: [:0]const u8) !f64 {
+    return std.fmt.parseFloat(f64, in);
+}
 
 var parse_fns = .{
     .int = parseu8,
@@ -650,6 +653,7 @@ var parse_fns = .{
     .ts2 = parseTs2,
     .str = parseStr,
     .int16 = parseu16,
+    .f64 = parsef64,
 };
 
 test "cmd" {
@@ -728,16 +732,17 @@ test "cmd" {
     const res_full = try parseArgs(cmd, parse_fns, args[0..], std.testing.allocator);
     defer res_full.deinit();
     const res = res_full.parsed_cmd;
+    _ = res;
 
-    std.debug.print("ts is {any}\n", .{res.ts2});
-    std.debug.print("p5 is {any}\n", .{res.subcommands.?.sub.subcommands.?.sub2.p5});
+    // std.debug.print("ts is {any}\n", .{res.ts2});
+    // std.debug.print("p5 is {any}\n", .{res.subcommands.?.sub.subcommands.?.sub2.p5});
     // defer res.ts.deinit(std.testing.allocator);
     // std.debug.print("ts is {any}\n", .{res.ts.items[0]});
-    if (res.subcommands) |s| {
-        std.debug.print("got subcommand: {any}\n", .{s});
-    }
-    const x: []const u8 = &.{1};
-    std.debug.print("{any}\n", .{x[1..]});
+    // if (res.subcommands) |s| {
+    //     std.debug.print("got subcommand: {any}\n", .{s});
+    // }
+    // const x: []const u8 = &.{1};
+    // std.debug.print("{any}\n", .{x[1..]});
 }
 
 pub fn main() !void {
@@ -805,4 +810,77 @@ pub fn main() !void {
     // const y = std.ArrayList(u8).init(alloc);
     // // std.ArrayList(u8).deinit(y);
     // @field(@TypeOf(y), "deinit")(y);
+}
+
+test "parses command" {
+    const cmd_type: Command = .{
+        .name = "prog",
+        .subcommands = &.{
+            .{
+                .name = "add",
+                .positionals = &.{.{
+                    .name = "values",
+                    .num_vals = .many,
+                    .parser = "f64",
+                    .description = "values to add",
+                }},
+            },
+            .{
+                .name = "multiply",
+                .positionals = &.{.{
+                    .name = "values",
+                    .num_vals = .many,
+                    .parser = "f64",
+                    .description = "values to multiply",
+                }},
+            },
+            .{
+                .name = "sub",
+                .params = &.{
+                    .{
+                        .name = "x",
+                        .short = "-f",
+                        .long = "--first",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "first value in expression 'x - y'",
+                    },
+                    .{
+                        .name = "y",
+                        .short = "-s",
+                        .long = "--second",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "second value in expression 'x - y'",
+                    },
+                },
+            },
+            .{
+                .name = "div",
+                .params = &.{
+                    .{
+                        .name = "num",
+                        .short = "-n",
+                        .long = "--numerator",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "numerator in expression x / y",
+                    },
+                    .{
+                        .name = "denom",
+                        .short = "-d",
+                        .long = "--denominator",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "denominator in expression x / y",
+                    },
+                },
+            },
+        },
+    };
+    const args1 = &.{"add", "1", "2", "3", "4"};
+    const res = try parseArgs(cmd_type, parse_fns, args1, std.testing.allocator);
+    defer res.deinit();
+    const cmd = res.parsed_cmd;
+    std.debug.print("nums to add: {any}\n", .{cmd.subcommands.?.add.values});
 }
