@@ -2,6 +2,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 pub const default_parsers = @import("parsers.zig").default_parsers;
 pub const extendDefaultParsers = @import("parsers.zig").extendDefaultParsers;
+const style = @import("style.zig");
+const bold = style.bold;
+const green = style.green;
+const cyan = style.cyan;
+const padRight = style.padRight;
+const strWidth = style.strWidth;
 
 /// Specifies whether a parameter/positional takes one value or many,
 /// which controls the output type (T vs. ArrayList(T)).
@@ -75,7 +81,7 @@ const Flag = struct {
     description: ?[:0]const u8 = null,
 };
 
-/// A command (or subcommand) that specifies all of its params, 
+/// A command (or subcommand) that specifies all of its params,
 /// positionals, flags, and subcommands.
 const Command = struct {
     /// The name of the command or subcommand. If this is a subcommand, it can be accessed
@@ -98,8 +104,10 @@ const Command = struct {
     /// Additionally, subcommands *are* allowed to define flags with the same short/long
     /// as parent commands. Any user input after the subcommand will be parsed into the subcommand.
     subcommands: ?[]const Command = null,
-    /// Description that will show up in the help output.
+    /// Primary description that will show up in the help output.
     description: ?[:0]const u8 = null,
+    /// Extra information that shows up at the bottom of the help output.
+    extra_info: ?[:0]const u8 = null,
 };
 
 /// Get the return type of a parser given the parser's name.
@@ -236,7 +244,7 @@ fn ParseResultPayload(cmd: Command, parsers: anytype) type {
 }
 
 /// The final result type from calling the `parse` function.
-/// Includes a comptime generated deinit function, which will 
+/// Includes a comptime generated deinit function, which will
 /// deinitialize all nested subcommands and their ArrayLists.
 fn ParseResult(comptime cmd: Command, parsers: anytype) type {
     return struct {
@@ -290,34 +298,43 @@ fn arrayContainsString(haystack: [1000][:0]const u8, needle: [:0]const u8, hayst
 }
 
 /// Ensures all constraints about the command are enforced.
-fn validateCommandStructure(cmd: Command) void {
+fn validateCommandStructure(comptime cmd: Command) void {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     const positionals = cmd.positionals orelse &.{};
     const subcommands = cmd.subcommands orelse &.{};
 
-    var all_the_names: [1000][:0]const u8 = undefined;
-    var all_the_names_len: usize = 0;
+    var flag_names: [1000][:0]const u8 = undefined;
+    var flag_names_len: usize = 0;
     var struct_names: [1000][:0]const u8 = undefined;
     var struct_names_len: usize = 0;
 
-    for (params) |param| {
+    inline for (params) |param| {
         if (param.long == null and param.short == null) {
-            @compileError("Either a long or short specifier for the parameter must be specified");
+            @compileError(std.fmt.comptimePrint(
+                "Invalid parameter '{s}': either a long or short specifier must be specified.",
+                .{param.name},
+            ));
         }
         if (param.long) |long| {
-            if (arrayContainsString(all_the_names, long, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
+            if (arrayContainsString(flag_names, long, flag_names_len)) {
+                @compileError(std.fmt.comptimePrint(
+                    "Invalid parameter '{s}': found duplicate flag specifier: {s}\n",
+                    .{ param.name, long },
+                ));
             }
-            all_the_names[all_the_names_len] = long;
-            all_the_names_len += 1;
+            flag_names[flag_names_len] = long;
+            flag_names_len += 1;
         }
         if (param.short) |short| {
-            if (arrayContainsString(all_the_names, short, all_the_names_len)) {
-                @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
+            if (arrayContainsString(flag_names, short, flag_names_len)) {
+                @compileError(std.fmt.comptimePrint(
+                    "Invalid parameter: '{s}': found duplicate flag specifier: {s}\n",
+                    .{ param.name, short },
+                ));
             }
-            all_the_names[all_the_names_len] = short;
-            all_the_names_len += 1;
+            flag_names[flag_names_len] = short;
+            flag_names_len += 1;
         }
         if (arrayContainsString(struct_names, param.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{param.name}));
@@ -333,23 +350,26 @@ fn validateCommandStructure(cmd: Command) void {
         struct_names_len += 1;
     }
 
-    for (flags) |flag| {
+    inline for (flags) |flag| {
         if (flag.long == null and flag.short == null) {
-            @compileError("Either a long or short specifier for the parameter must be specified");
+            @compileError(std.fmt.comptimePrint(
+                "Invalid flag '{s}': either a long or short specifier for the parameter must be specified.",
+                .{flag.name},
+            ));
         }
         if (flag.long) |long| {
-            if (arrayContainsString(all_the_names, long, all_the_names_len)) {
+            if (arrayContainsString(flag_names, long, flag_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{long}));
             }
-            all_the_names[all_the_names_len] = long;
-            all_the_names_len += 1;
+            flag_names[flag_names_len] = long;
+            flag_names_len += 1;
         }
         if (flag.short) |short| {
-            if (arrayContainsString(all_the_names, short, all_the_names_len)) {
+            if (arrayContainsString(flag_names, short, flag_names_len)) {
                 @compileError(std.fmt.comptimePrint("Found duplicate flag specifier: {s}\n", .{short}));
             }
-            all_the_names[all_the_names_len] = short;
-            all_the_names_len += 1;
+            flag_names[flag_names_len] = short;
+            flag_names_len += 1;
         }
         if (arrayContainsString(struct_names, flag.name, struct_names_len)) {
             @compileError(std.fmt.comptimePrint("Found duplicate struct field name: {s}\n", .{flag.name}));
@@ -472,7 +492,7 @@ fn parseArgsWithParserValidation(
             const default = try getParser(parsers, param.parser)(param.default.?);
             @field(result, param.name) = default;
         } else if (!param.required and param.default == null) {
-            @field(result, param.name);
+            @field(result, param.name) = null;
         }
     }
 
@@ -707,21 +727,166 @@ test "parses command" {
             },
         },
     };
-    const args1 = &.{"add", "1", "2", "3", "4"};
+    const args1 = &.{ "add", "1", "2", "3", "4" };
     const res = try parseArgs(cmd_type, default_parsers, args1, std.testing.allocator);
     defer res.deinit();
     const cmd = res.parsed_cmd;
     std.debug.print("nums to add: {any}\n", .{cmd.subcommands.?.add.values});
 }
 
+inline fn helpLine(
+    padded_width: usize,
+    short_opt: ?[:0]const u8,
+    long_opt: ?[:0]const u8,
+    description_opt: ?[:0]const u8,
+) []const u8 {
+    comptime var line: []const u8 = "";
+    if (short_opt) |short| {
+        line = line ++ bold(cyan(short));
+        if (long_opt != null) {
+            line = line ++ ", ";
+        }
+    }
+
+    if (long_opt) |long| {
+        line = line ++ bold(cyan(long));
+    }
+    line = "  " ++ padRight(line, padded_width);
+
+    if (description_opt) |d| {
+        line = line ++ d;
+    }
+
+    return line ++ "\n";
+}
+
+pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
+    comptime validateCommandStructure(cmd);
+    const params = cmd.params orelse &.{};
+    const flags = cmd.flags orelse &.{};
+    const positionals = cmd.positionals orelse &.{};
+    const subcommands = cmd.subcommands orelse &.{};
+    const desc = if (cmd.description) |d| d ++ "\n" else "";
+
+    // TODO: usage with subcommands doesn't mention parent commands :(
+    // comptime var usage: []const u8 = bold(green("Usage: ")) ++ bold(cyan(cmd.name)) ++
+    //     if (cmd.params != null or cmd.flags != null) cyan(" [OPTIONS] ") else " ";
+    // inline for (positionals) |positional| {
+    //     usage = usage ++ cyan("<") ++ cyan(positional.name);
+    //     if (positional.num_vals == .many) {
+    //         usage = usage ++ "...";
+    //     }
+    //     usage = usage ++ cyan("> ");
+    // }
+    // if (cmd.flags != null or cmd.params != null or cmd.positionals != null or cmd.subcommands != null or cmd.extra_info != null) {
+    //     usage = usage ++ "\n\n";
+    // }
+
+    comptime var options_width = 0;
+    inline for (params) |param| {
+        if (param.short != null and param.long != null) {
+            options_width = @max(options_width, param.short.?.len + 2 + param.long.?.len);
+        } else if (param.long) |long| {
+            options_width = @max(options_width, long.len);
+        } else if (param.short) |short| {
+            options_width = @max(options_width, short.len);
+        }
+    }
+
+    inline for (flags) |flag| {
+        if (flag.short != null and flag.long != null) {
+            options_width = @max(options_width, flag.short.?.len + 2 + flag.long.?.len);
+        } else if (flag.long) |long| {
+            options_width = @max(options_width, long.len);
+        } else if (flag.short) |short| {
+            options_width = @max(options_width, short.len);
+        }
+    }
+
+    comptime var options_help: []const u8 = "";
+    if (params.len > 0) {
+        options_help = options_help ++ "\n";
+        options_help = bold(green("Options:")) ++ "\n";
+        inline for (params) |param| {
+            options_help = options_help ++ 
+                helpLine(options_width + 2, param.short, param.long, param.description);
+        }
+    }
+
+    if (flags.len > 0) {
+        inline for (flags) |flag| {
+            options_help = options_help ++ 
+                helpLine(options_width + 2, flag.short, flag.long, flag.description);
+        }
+    }
+
+    comptime var arguments_help: []const u8 = "";
+    if (positionals.len > 0) {
+        arguments_help = arguments_help ++ "\n";
+        arguments_help = arguments_help ++ bold(green("Arguments:")) ++ "\n";
+        comptime var arguments_width = 0;
+        inline for (positionals) |positional| {
+            const extra = if (positional.num_vals == .many) 3 else 0;
+            // +2 is for the angle brackets
+            arguments_width = @max(arguments_width, positional.name.len + extra + 2);
+        }
+
+        inline for (positionals) |positional| {
+            comptime var line: []const u8 = "";
+            line = line ++ "<" ++ bold(cyan(positional.name));
+            if (positional.num_vals == .many) {
+                line = line ++ bold(cyan("..."));
+            }
+            line = line ++ ">";
+            line = "  " ++ padRight(line, arguments_width + 2);
+
+            if (positional.description) |d| {
+                line = line ++ d;
+            }
+
+            arguments_help = arguments_help ++ line ++ "\n";
+        }
+    }
+
+    comptime var subcommands_help: []const u8 = "";
+    if (subcommands.len > 0) {
+        subcommands_help = subcommands_help ++ "\n";
+        subcommands_help = subcommands_help ++ bold(green("Commands:")) ++ "\n";
+        comptime var total_width: usize = 0;
+        inline for (subcommands) |command| {
+            total_width = @max(total_width, command.name.len);
+        }
+
+        inline for (subcommands) |command| {
+            comptime var line: []const u8 = "";
+            line = line ++ bold(cyan(command.name));
+            line = "  " ++ padRight(line, total_width + 2);
+
+            if (command.description) |d| {
+                line = line ++ d;
+            }
+
+            subcommands_help = subcommands_help ++ line ++ "\n";
+        }
+    }
+
+    const extra_info = if (cmd.extra_info) |info| "\n" ++ info ++ "\n" else "";
+    const help = desc ++ options_help ++ arguments_help ++ subcommands_help ++ extra_info;
+    try writer.writeAll(help);
+}
+
 test "overwrite parser" {
     const cmd_type: Command = .{
         .name = "prog",
-        .positionals = &.{.{
+        .positionals = &.{ .{
             .name = "value",
             .num_vals = .one,
             .parser = "u8",
-        }},
+        }, .{
+            .name = "value2",
+            .num_vals = .one,
+            .parser = "custom",
+        } },
     };
     const parseFn = struct {
         fn parseThing(in: [:0]const u8) !u16 {
@@ -729,11 +894,119 @@ test "overwrite parser" {
             return std.math.maxInt(u16);
         }
     }.parseThing;
-    const parsers = extendDefaultParsers(.{.u8 = parseFn});
-    const args = &.{"19"};
+    const customParser = struct {
+        fn parse(in: [:0]const u8) ![]const u8 {
+            if (in.len > 0) {
+                return in[in.len - 1 ..];
+            } else {
+                return in;
+            }
+        }
+    }.parse;
+    const parsers = extendDefaultParsers(.{ .u8 = parseFn, .custom = customParser });
+    const args = &.{ "19", "hello!" };
     const res = try parseArgs(cmd_type, parsers, args, std.testing.allocator);
     defer res.deinit();
 
     try std.testing.expectEqual(@TypeOf(res.parsed_cmd.value), u16);
     try std.testing.expectEqual(res.parsed_cmd.value, std.math.maxInt(u16));
+    try std.testing.expectEqualSlices(u8, res.parsed_cmd.value2, "!");
+}
+
+test "help" {
+    const cmd_type: Command = .{
+        .name = "math",
+        .description = "A tool to help you do math.",
+        .extra_info = "Use 'help <command>' to see help on any of the subcommands.",
+        .flags = &.{.{
+            .name = "round",
+            .short = "-r",
+            .long = "--round",
+            .description = "Whether to round the result to the nearest integer",
+        }},
+        .params = &.{.{
+            .name = "precision",
+            .short = "-p",
+            .parser = "u8",
+            .description = "The number of decimal places to display in the final result for floating point calculations.",
+            .required = false,
+        }},
+        .subcommands = &.{
+            .{
+                .name = "add",
+                .description = "A subcommand for adding many numbers together",
+                .positionals = &.{.{
+                    .name = "values",
+                    .num_vals = .many,
+                    .parser = "f64",
+                    .description = "values to add",
+                }},
+            },
+            .{
+                .name = "multiply",
+                .description = "A subcommand for multiplying many numbers together",
+                .positionals = &.{.{
+                    .name = "values",
+                    .num_vals = .many,
+                    .parser = "f64",
+                    .description = "values to multiply",
+                }},
+            },
+            .{
+                .name = "sub",
+                .params = &.{
+                    .{
+                        .name = "x",
+                        .short = "-f",
+                        .long = "--first",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "first value in expression 'x - y'",
+                    },
+                    .{
+                        .name = "y",
+                        .short = "-s",
+                        .long = "--second",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "second value in expression 'x - y'",
+                    },
+                    .{
+                        .name = "z",
+                        .short = "-t",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "third value in expression 'x - y - z'",
+                        .required = false,
+                    },
+                },
+            },
+            .{
+                .name = "div",
+                .params = &.{
+                    .{
+                        .name = "num",
+                        .short = "-n",
+                        .long = "--numerator",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "numerator in expression x / y",
+                    },
+                    .{
+                        .name = "denom",
+                        .short = "-d",
+                        .long = "--denominator",
+                        .num_vals = .one,
+                        .parser = "f64",
+                        .description = "denominator in expression x / y",
+                    },
+                },
+            },
+        },
+    };
+    try writeHelp(cmd_type, std.io.getStdOut().writer());
+    try writeHelp(cmd_type.subcommands.?[0], std.io.getStdOut().writer());
+    const args = &.{};
+    const res = try parseArgs(cmd_type, default_parsers, args, std.testing.allocator);
+    defer res.deinit();
 }
