@@ -40,7 +40,7 @@ const Param = struct {
     /// If a parameter is required, you cannot specify a default value.
     /// For parameters that take a single value and are not required, the
     /// output type will be an optional.
-    required: bool = true,
+    required: bool = false,
 };
 
 /// A CLI argument specified by position. Any arguments that are not interpreted
@@ -591,18 +591,18 @@ fn parseArgsWithParserValidation(
     // If we didn't get any values for params/positionals that take many values,
     // we can set the default values.
     inline for (params) |param| {
-        if (param.num_vals == .many) {
+        if (param.num_vals == .many and param.default != null) {
             const list = &@field(result, param.name);
-            if (list.items.len == 0 and param.default != null) {
+            if (list.items.len == 0) {
                 try list.append(try getParser(parsers, param.parser)(param.default.?));
             }
         }
     }
 
     inline for (positionals) |positional| {
-        if (positional.num_vals == .many) {
+        if (positional.num_vals == .many and positional.default != null) {
             const list = &@field(result, positional.name);
-            if (list.items.len == 0 and positional.default != null) {
+            if (list.items.len == 0) {
                 try list.append(try getParser(parsers, positional.parser)(positional.default.?));
             }
         }
@@ -805,25 +805,23 @@ pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
 
     comptime var options_help: []const u8 = "";
     if (params.len > 0) {
-        options_help = options_help ++ "\n";
-        options_help = bold(green("Options:")) ++ "\n";
+        options_help = options_help ++ "\n" ++ bold(green("Options:")) ++ "\n";
         inline for (params) |param| {
-            options_help = options_help ++ 
+            options_help = options_help ++
                 helpLine(options_width + 2, param.short, param.long, param.description);
         }
     }
 
     if (flags.len > 0) {
         inline for (flags) |flag| {
-            options_help = options_help ++ 
+            options_help = options_help ++
                 helpLine(options_width + 2, flag.short, flag.long, flag.description);
         }
     }
 
     comptime var arguments_help: []const u8 = "";
     if (positionals.len > 0) {
-        arguments_help = arguments_help ++ "\n";
-        arguments_help = arguments_help ++ bold(green("Arguments:")) ++ "\n";
+        arguments_help = arguments_help ++ "\n" ++ bold(green("Arguments:")) ++ "\n";
         comptime var arguments_width = 0;
         inline for (positionals) |positional| {
             const extra = if (positional.num_vals == .many) 3 else 0;
@@ -929,7 +927,7 @@ test "help" {
             .short = "-p",
             .parser = "u8",
             .description = "The number of decimal places to display in the final result for floating point calculations.",
-            .required = false,
+            .required = true,
         }},
         .subcommands = &.{
             .{
