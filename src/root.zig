@@ -11,13 +11,13 @@ const strWidth = style.strWidth;
 
 /// Specifies whether a parameter/positional takes one value or many,
 /// which controls the output type (T vs. ArrayList(T)).
-const NumVals = enum {
+pub const NumVals = enum {
     one,
     many,
 };
 
 /// A CLI argument specified by a flag (short or long or both).
-const Param = struct {
+pub const Param = struct {
     /// The name of the param in the result struct.
     name: [:0]const u8,
     /// The name of the parser used to convert the argument string to the correct type.
@@ -45,7 +45,7 @@ const Param = struct {
 
 /// A CLI argument specified by position. Any arguments that are not interpreted
 /// as flags/params/subcommands will be interpreted as positionals.
-const Positional = struct {
+pub const Positional = struct {
     /// The name of the positional in the result struct
     name: [:0]const u8,
     /// The name of the parser used to convert the argument string to the correct type.
@@ -69,7 +69,7 @@ const Positional = struct {
 };
 
 /// A boolean flag. Always defaults to false.
-const Flag = struct {
+pub const Flag = struct {
     /// The name of the flag in the result struct.
     name: [:0]const u8,
     /// Short flag used to specify this parameter. One of short or long is required,
@@ -83,7 +83,7 @@ const Flag = struct {
 
 /// A command (or subcommand) that specifies all of its params,
 /// positionals, flags, and subcommands.
-const Command = struct {
+pub const Command = struct {
     /// The name of the command or subcommand. If this is a subcommand, it can be accessed
     /// from the parent like `cmd.subcommands.<name>`.
     name: [:0]const u8,
@@ -113,7 +113,7 @@ const Command = struct {
 /// Get the return type of a parser given the parser's name.
 /// If the return type is an error union, this extracts the payload type from
 /// the error union.
-fn getParserPayloadType(parsers: anytype, parser_name: [:0]const u8) type {
+pub fn getParserPayloadType(parsers: anytype, parser_name: [:0]const u8) type {
     const ret_type = @typeInfo(@TypeOf(@field(parsers, parser_name))).@"fn".return_type.?;
     const ret_type_info = @typeInfo(ret_type);
     return if (ret_type_info == .error_union)
@@ -123,7 +123,7 @@ fn getParserPayloadType(parsers: anytype, parser_name: [:0]const u8) type {
 }
 
 /// Returns the final param type in the result struct (which could be a slice or an optional)
-fn getParamType(
+pub fn getParamType(
     parsers: anytype,
     parser: [:0]const u8,
     num_vals: NumVals,
@@ -137,7 +137,7 @@ fn getParamType(
 
 /// Convert all the parameters into a struct based on the function signatures of the parsers
 /// and the default values of the params.
-fn ParseResultPayload(cmd: Command, parsers: anytype) type {
+pub fn ParseResultPayload(cmd: Command, parsers: anytype) type {
     validateCommandStructure(cmd);
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
@@ -246,7 +246,7 @@ fn ParseResultPayload(cmd: Command, parsers: anytype) type {
 /// The final result type from calling the `parse` function.
 /// Includes a comptime generated deinit function, which will
 /// deinitialize all nested subcommands and their ArrayLists.
-fn ParseResult(comptime cmd: Command, parsers: anytype) type {
+pub fn ParseResult(comptime cmd: Command, parsers: anytype) type {
     return struct {
         const Self = @This();
         parsed_cmd: ParseResultPayload(cmd, parsers),
@@ -280,7 +280,7 @@ fn ParseResult(comptime cmd: Command, parsers: anytype) type {
 
 /// Retrieve a parser, but give it an error union signature so that we can always use
 /// try/catch when we call the function.
-fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const u8) anyerror!getParserPayloadType(parsers, parser_name) {
+pub fn getParser(parsers: anytype, comptime parser_name: [:0]const u8) fn ([:0]const u8) anyerror!getParserPayloadType(parsers, parser_name) {
     return struct {
         fn parse(input: [:0]const u8) !getParserPayloadType(parsers, parser_name) {
             return @field(parsers, parser_name)(input);
@@ -298,7 +298,7 @@ fn arrayContainsString(haystack: [1000][:0]const u8, needle: [:0]const u8, hayst
 }
 
 /// Ensures all constraints about the command are enforced.
-fn validateCommandStructure(comptime cmd: Command) void {
+pub fn validateCommandStructure(comptime cmd: Command) void {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     const positionals = cmd.positionals orelse &.{};
@@ -410,7 +410,7 @@ fn validateCommandStructure(comptime cmd: Command) void {
     }
 }
 
-fn validateParsers(parsers: anytype) void {
+pub fn validateParsers(parsers: anytype) void {
     const parsers_info = @typeInfo(@TypeOf(parsers));
     if (parsers_info != .@"struct") {
         @compileError("parsers must be a tuple that maps parser strings to parser functions");
@@ -463,7 +463,7 @@ fn strMatchesShortOrLong(arg: [:0]const u8, short: ?[:0]const u8, long: ?[:0]con
     return false;
 }
 
-fn parseArgsWithParserValidation(
+pub fn parseArgsWithParserValidation(
     comptime cmd: Command,
     parsers: anytype,
     args: []const [:0]const u8,
@@ -664,79 +664,6 @@ pub fn parse(
     return parseArgs(cmd, parsers, args[1..], alloc);
 }
 
-test "parses command" {
-    const cmd_type: Command = .{
-        .name = "prog",
-        .subcommands = &.{
-            .{
-                .name = "add",
-                .positionals = &.{.{
-                    .name = "values",
-                    .num_vals = .many,
-                    .parser = "f64",
-                    .description = "values to add",
-                }},
-            },
-            .{
-                .name = "multiply",
-                .positionals = &.{.{
-                    .name = "values",
-                    .num_vals = .many,
-                    .parser = "f64",
-                    .description = "values to multiply",
-                }},
-            },
-            .{
-                .name = "sub",
-                .params = &.{
-                    .{
-                        .name = "x",
-                        .short = "-f",
-                        .long = "--first",
-                        .num_vals = .one,
-                        .parser = "f64",
-                        .description = "first value in expression 'x - y'",
-                    },
-                    .{
-                        .name = "y",
-                        .short = "-s",
-                        .long = "--second",
-                        .num_vals = .one,
-                        .parser = "f64",
-                        .description = "second value in expression 'x - y'",
-                    },
-                },
-            },
-            .{
-                .name = "div",
-                .params = &.{
-                    .{
-                        .name = "num",
-                        .short = "-n",
-                        .long = "--numerator",
-                        .num_vals = .one,
-                        .parser = "f64",
-                        .description = "numerator in expression x / y",
-                    },
-                    .{
-                        .name = "denom",
-                        .short = "-d",
-                        .long = "--denominator",
-                        .num_vals = .one,
-                        .parser = "f64",
-                        .description = "denominator in expression x / y",
-                    },
-                },
-            },
-        },
-    };
-    const args1 = &.{ "add", "1", "2", "3", "4" };
-    const res = try parseArgs(cmd_type, default_parsers, args1, std.testing.allocator);
-    defer res.deinit();
-    const cmd = res.parsed_cmd;
-    std.debug.print("nums to add: {any}\n", .{cmd.subcommands.?.add.values});
-}
-
 inline fn helpLine(
     padded_width: usize,
     short_opt: ?[:0]const u8,
@@ -763,7 +690,7 @@ inline fn helpLine(
     return line ++ "\n";
 }
 
-fn optionsHelp(comptime cmd: Command) []const u8 {
+pub fn optionsHelp(comptime cmd: Command) []const u8 {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
     comptime var options_width = 0;
@@ -805,7 +732,7 @@ fn optionsHelp(comptime cmd: Command) []const u8 {
     return options_help;
 }
 
-fn argumentsHelp(comptime cmd: Command) []const u8 {
+pub fn argumentsHelp(comptime cmd: Command) []const u8 {
     const positionals = cmd.positionals orelse &.{};
     comptime var arguments_help: []const u8 = "";
     if (positionals.len > 0) {
@@ -836,7 +763,7 @@ fn argumentsHelp(comptime cmd: Command) []const u8 {
     return arguments_help;
 }
 
-fn subcommandsHelp(comptime cmd: Command) []const u8 {
+pub fn subcommandsHelp(comptime cmd: Command) []const u8 {
     const subcommands = cmd.subcommands orelse &.{};
     comptime var subcommands_help: []const u8 = "";
     if (subcommands.len > 0) {
@@ -860,22 +787,20 @@ fn subcommandsHelp(comptime cmd: Command) []const u8 {
     return subcommands_help;
 }
 
-fn writeHelpWithParents(
+pub fn helpStringWithParents(
     comptime cmd: Command,
-    writer: anytype,
     comptime subcommand_chain: ?[]const [:0]const u8,
     comptime parent_command_chain: [:0]const u8,
     // comptime parent_options_help: [:0]const u8,
     // comptime parent_arguments_help: [:0]const u8,
     // comptime parent_subcommands_help: [:0]const u8,
-) !void {
+) []const u8 {
     if (subcommand_chain) |subcommand_names| {
         inline for (cmd.subcommands.?) |sub| {
             if (std.mem.eql(u8, sub.name, subcommand_names[0])) {
                 if (subcommand_names.len > 1) {
-                    try writeHelpWithParents(
+                    return helpStringWithParents(
                         sub,
-                        writer,
                         subcommand_chain[1..],
                         parent_command_chain ++ cmd.name ++ " ",
                         // parent_options_help ++ optionsHelp(cmd),
@@ -883,9 +808,8 @@ fn writeHelpWithParents(
                         // parent_subcommands_help ++ subcommandsHelp(cmd),
                     );
                 } else {
-                    try writeHelpWithParents(
+                    return helpStringWithParents(
                         sub,
-                        writer,
                         null,
                         parent_command_chain ++ cmd.name ++ " ",
                         // parent_options_help ++ optionsHelp(cmd),
@@ -894,9 +818,6 @@ fn writeHelpWithParents(
                     );
                 }
             }
-        }
-        if (subcommand_names.len != 0) {
-            return;
         }
     }
 
@@ -908,7 +829,7 @@ fn writeHelpWithParents(
     const positionals = cmd.positionals orelse &.{};
     inline for (positionals) |positional| {
         usage = usage ++ if (positional.required) "<" else "[";
-        usage = usage ++ cyan(positional.name);
+        usage = usage ++ bold(cyan(positional.name));
         usage = usage ++ if (positional.required) ">" else "]";
         usage = usage ++ if (positional.num_vals == .many) "... " else " ";
     }
@@ -931,21 +852,19 @@ fn writeHelpWithParents(
     }
 
     const extra_info = if (cmd.extra_info) |info| "\n" ++ info ++ "\n" else "";
-    const help = desc ++ usage ++ options_help ++ arguments_help ++ subcommands_help ++ extra_info;
-    try writer.writeAll(help);
+    return desc ++ usage ++ options_help ++ arguments_help ++ subcommands_help ++ extra_info;
 }
 
-pub fn writeHelp(
+pub fn helpString(
     comptime cmd: Command,
-    writer: anytype,
     /// Use the `subcommand_chain` to print help for subcommands of `cmd`.
     /// If you just want to print help for the main command, this argument is not necessary.
     /// It should be a list of subcommand names leading to the final subcommand you
     /// wish to write help for.
     comptime subcommand_chain: ?[]const [:0]const u8,
-) !void {
+) []const u8 {
     comptime validateCommandStructure(cmd);
-    try writeHelpWithParents(cmd, writer, subcommand_chain, "");
+    return helpStringWithParents(cmd, subcommand_chain, "");
 }
 
 test "overwrite parser" {
@@ -1081,11 +1000,12 @@ test "help" {
     const res = try parseArgs(cmd_type, default_parsers, args, std.testing.allocator);
     defer res.deinit();
     // try writeHelp(cmd_type, std.io.getStdOut().writer(), null);
-    try writeHelp(cmd_type, std.io.getStdOut().writer(), null);
-    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"add"});
-    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"sub"});
-    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"div"});
-    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"mul"});
+    const stdout = std.io.getStdOut().writer();
+    try stdout.writeAll(helpString(cmd_type, null));
+    try stdout.writeAll(helpString(cmd_type, &.{"add"}));
+    try stdout.writeAll(helpString(cmd_type, &.{"sub"}));
+    try stdout.writeAll(helpString(cmd_type, &.{"div"}));
+    try stdout.writeAll(helpString(cmd_type, &.{"mul"}));
 }
 
 test "README example" {
