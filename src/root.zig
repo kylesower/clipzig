@@ -487,6 +487,7 @@ fn parseArgsWithParserValidation(
     // Need to initialize all the things
     inline for (params) |param| {
         if (param.num_vals == .many) {
+            @compileLog("creating ArrayList for ", param.name);
             @field(result, param.name) = std.ArrayList(getParserPayloadType(parsers, param.parser)).init(alloc);
         } else if (param.default != null) {
             const default = try getParser(parsers, param.parser)(param.default.?);
@@ -522,6 +523,7 @@ fn parseArgsWithParserValidation(
         inline for (subcommands) |subcommand| {
             if (std.mem.eql(u8, arg, subcommand.name)) {
                 const subcommand_type = @typeInfo(@TypeOf(@field(result, "subcommands"))).optional.child;
+                std.debug.print("parsing subcommand {s}\n", .{subcommand.name});
                 @field(result, "subcommands") = @unionInit(subcommand_type, subcommand.name, (try parseArgsWithParserValidation(
                     subcommand,
                     parsers,
@@ -658,6 +660,7 @@ pub fn parse(
     alloc: Allocator,
 ) !ParseResult(cmd, parsers) {
     const args = try std.process.argsAlloc(alloc);
+    defer std.process.argsFree(alloc, args);
     return parseArgs(cmd, parsers, args[1..], alloc);
 }
 
@@ -760,28 +763,9 @@ inline fn helpLine(
     return line ++ "\n";
 }
 
-pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
-    comptime validateCommandStructure(cmd);
+fn optionsHelp(comptime cmd: Command) []const u8 {
     const params = cmd.params orelse &.{};
     const flags = cmd.flags orelse &.{};
-    const positionals = cmd.positionals orelse &.{};
-    const subcommands = cmd.subcommands orelse &.{};
-    const desc = if (cmd.description) |d| d ++ "\n" else "";
-
-    // TODO: usage with subcommands doesn't mention parent commands :(
-    // comptime var usage: []const u8 = bold(green("Usage: ")) ++ bold(cyan(cmd.name)) ++
-    //     if (cmd.params != null or cmd.flags != null) cyan(" [OPTIONS] ") else " ";
-    // inline for (positionals) |positional| {
-    //     usage = usage ++ cyan("<") ++ cyan(positional.name);
-    //     if (positional.num_vals == .many) {
-    //         usage = usage ++ "...";
-    //     }
-    //     usage = usage ++ cyan("> ");
-    // }
-    // if (cmd.flags != null or cmd.params != null or cmd.positionals != null or cmd.subcommands != null or cmd.extra_info != null) {
-    //     usage = usage ++ "\n\n";
-    // }
-
     comptime var options_width = 0;
     inline for (params) |param| {
         if (param.short != null and param.long != null) {
@@ -805,7 +789,6 @@ pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
 
     comptime var options_help: []const u8 = "";
     if (params.len > 0) {
-        options_help = options_help ++ "\n" ++ bold(green("Options:")) ++ "\n";
         inline for (params) |param| {
             options_help = options_help ++
                 helpLine(options_width + 2, param.short, param.long, param.description);
@@ -819,9 +802,13 @@ pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
         }
     }
 
+    return options_help;
+}
+
+fn argumentsHelp(comptime cmd: Command) []const u8 {
+    const positionals = cmd.positionals orelse &.{};
     comptime var arguments_help: []const u8 = "";
     if (positionals.len > 0) {
-        arguments_help = arguments_help ++ "\n" ++ bold(green("Arguments:")) ++ "\n";
         comptime var arguments_width = 0;
         inline for (positionals) |positional| {
             const extra = if (positional.num_vals == .many) 3 else 0;
@@ -846,10 +833,13 @@ pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
         }
     }
 
+    return arguments_help;
+}
+
+fn subcommandsHelp(comptime cmd: Command) []const u8 {
+    const subcommands = cmd.subcommands orelse &.{};
     comptime var subcommands_help: []const u8 = "";
     if (subcommands.len > 0) {
-        subcommands_help = subcommands_help ++ "\n";
-        subcommands_help = subcommands_help ++ bold(green("Commands:")) ++ "\n";
         comptime var total_width: usize = 0;
         inline for (subcommands) |command| {
             total_width = @max(total_width, command.name.len);
@@ -867,10 +857,95 @@ pub fn writeHelp(comptime cmd: Command, writer: anytype) !void {
             subcommands_help = subcommands_help ++ line ++ "\n";
         }
     }
+    return subcommands_help;
+}
+
+fn writeHelpWithParents(
+    comptime cmd: Command,
+    writer: anytype,
+    comptime subcommand_chain: ?[]const [:0]const u8,
+    comptime parent_command_chain: [:0]const u8,
+    // comptime parent_options_help: [:0]const u8,
+    // comptime parent_arguments_help: [:0]const u8,
+    // comptime parent_subcommands_help: [:0]const u8,
+) !void {
+    if (subcommand_chain) |subcommand_names| {
+        inline for (cmd.subcommands.?) |sub| {
+            if (std.mem.eql(u8, sub.name, subcommand_names[0])) {
+                if (subcommand_names.len > 1) {
+                    try writeHelpWithParents(
+                        sub,
+                        writer,
+                        subcommand_chain[1..],
+                        parent_command_chain ++ cmd.name ++ " ",
+                        // parent_options_help ++ optionsHelp(cmd),
+                        // parent_arguments_help ++ argumentsHelp(cmd),
+                        // parent_subcommands_help ++ subcommandsHelp(cmd),
+                    );
+                } else {
+                    try writeHelpWithParents(
+                        sub,
+                        writer,
+                        null,
+                        parent_command_chain ++ cmd.name ++ " ",
+                        // parent_options_help ++ optionsHelp(cmd),
+                        // parent_arguments_help ++ argumentsHelp(cmd),
+                        // parent_subcommands_help ++ subcommandsHelp(cmd),
+                    );
+                }
+            }
+        }
+        if (subcommand_names.len != 0) {
+            return;
+        }
+    }
+
+    const desc = if (cmd.description) |d| d ++ "\n" else "";
+
+    comptime var usage: []const u8 = bold(green("Usage: ")) ++ bold(cyan(parent_command_chain)) ++ bold(cyan(cmd.name)) ++
+        if (cmd.params != null or cmd.flags != null) cyan(" [OPTIONS] ") else " ";
+            usage = usage ++ if (cmd.subcommands != null) cyan("[COMMANDS] ") else "";
+    const positionals = cmd.positionals orelse &.{};
+    inline for (positionals) |positional| {
+        usage = usage ++ if (positional.required) "<" else "[";
+        usage = usage ++ cyan(positional.name);
+        usage = usage ++ if (positional.required) ">" else "]";
+        usage = usage ++ if (positional.num_vals == .many) "... " else " ";
+    }
+    usage = usage ++ "\n";
+
+    comptime var options_help = optionsHelp(cmd);
+    comptime var arguments_help = argumentsHelp(cmd);
+    comptime var subcommands_help = subcommandsHelp(cmd);
+
+    if (options_help.len > 0) {
+        options_help = "\n" ++ bold(green("Options:")) ++ "\n" ++ options_help;
+    }
+
+    if (arguments_help.len > 0) {
+        arguments_help = "\n" ++ bold(green("Arguments:")) ++ "\n" ++ arguments_help;
+    }
+
+    if (subcommands_help.len > 0) {
+        subcommands_help = "\n" ++ bold(green("Commands:")) ++ "\n" ++ subcommands_help;
+    }
 
     const extra_info = if (cmd.extra_info) |info| "\n" ++ info ++ "\n" else "";
-    const help = desc ++ options_help ++ arguments_help ++ subcommands_help ++ extra_info;
+    const help = desc ++ usage ++ options_help ++ arguments_help ++ subcommands_help ++ extra_info;
     try writer.writeAll(help);
+}
+
+pub fn writeHelp(
+    comptime cmd: Command,
+    writer: anytype,
+    /// Use the `subcommand_chain` to print help for subcommands of `cmd`.
+    /// If you just want to print help for the main command, this argument is not necessary.
+    /// It should be a list of subcommand names leading to the final subcommand you
+    /// wish to write help for.
+    comptime subcommand_chain: ?[]const [:0]const u8,
+) !void {
+    comptime validateCommandStructure(cmd);
+    try writeHelpWithParents(cmd, writer, subcommand_chain, "");
 }
 
 test "overwrite parser" {
@@ -941,7 +1016,7 @@ test "help" {
                 }},
             },
             .{
-                .name = "multiply",
+                .name = "mul",
                 .description = "A subcommand for multiplying many numbers together",
                 .positionals = &.{.{
                     .name = "values",
@@ -1002,9 +1077,58 @@ test "help" {
             },
         },
     };
-    try writeHelp(cmd_type, std.io.getStdOut().writer());
-    try writeHelp(cmd_type.subcommands.?[0], std.io.getStdOut().writer());
-    const args = &.{};
+    const args = &.{ "-p", "3" };
     const res = try parseArgs(cmd_type, default_parsers, args, std.testing.allocator);
     defer res.deinit();
+    // try writeHelp(cmd_type, std.io.getStdOut().writer(), null);
+    try writeHelp(cmd_type, std.io.getStdOut().writer(), null);
+    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"add"});
+    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"sub"});
+    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"div"});
+    try writeHelp(cmd_type, std.io.getStdOut().writer(), &.{"mul"});
+}
+
+test "README example" {
+    const cmd_type: Command = .{
+        .name = "math",
+        .description = "A tool to help you do math.",
+        .extra_info = "Use 'help <command>' to see help on any of the subcommands.",
+        .flags = &.{.{
+            .name = "round",
+            .short = "-r",
+            .long = "--round",
+            .description = "Whether to round the result to the nearest integer",
+        }},
+        .params = &.{.{
+            .name = "precision",
+            .short = "-p",
+            .parser = "u8",
+            .description = "The number of decimal places to display in the final result for floating point calculations.",
+            .required = false,
+            .default = "3",
+        }},
+        .subcommands = &.{.{
+            .name = "add",
+            .description = "A subcommand for adding many numbers together",
+            .positionals = &.{.{
+                .name = "values",
+                .num_vals = .many,
+                .parser = "f64",
+                .description = "values to add",
+            }},
+        }},
+    };
+    const args = &.{ "--round", "add", "1", "2", "3" };
+    const result = try parseArgs(cmd_type, default_parsers, args, std.testing.allocator);
+    defer result.deinit();
+
+    const cmd = result.parsed_cmd;
+
+    try std.testing.expect(cmd.round);
+    // The `-p` parameter wasn't provided, so it gets set to the (parsed) default value.
+    try std.testing.expectEqual(cmd.precision, 3);
+    // The `add` subcommand gets a `values` field because that's the name of that positional.
+    // Because it takes many values, the resulting type is an ArrayList(f64).
+    try std.testing.expectEqual(@TypeOf(cmd.subcommands.?.add.values), std.ArrayList(f64));
+    try std.testing.expectEqualSlices(f64, cmd.subcommands.?.add.values.items, &.{ 1, 2, 3 });
 }
